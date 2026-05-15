@@ -1,268 +1,509 @@
-# Sylva Telco Cloud O-DU Lab
+# Sylva OIE Project
 
-This repository documents a lab architecture for deploying a Sylva telco cloud platform and onboarding an Open RAN O-DU workload as a cloud-native network function.
+This repository documents a VMware CAPV deployment path for Sylva, followed by onboarding Open RAN O-DU and O-CU workloads on top of the Sylva-managed Kubernetes environment.
 
-The first implementation target is documentation only: requirements, build steps, and the reference architecture. Runtime manifests, Helm charts, and GitOps repositories can be added after the platform design is approved.
+## Overview
 
-## Project Goal
+This guide explains how to deploy a Sylva management Kubernetes cluster on VMware vSphere using Cluster API Provider vSphere, also known as CAPV.
 
-Build a Sylva-based telco cloud environment with:
+The deployment includes:
 
-- One Sylva management cluster for lifecycle management, Rancher, Cluster API, Flux, Harbor, Vault, Keycloak, and observability.
-- One Sylva workload cluster for telecom CNF workloads.
-- An O-RAN O-DU High workload deployed on the workload cluster, initially with CU and RIC stubs for lab validation.
+- Bootstrap VM preparation
+- Required tool installation
+- Sylva repository setup
+- VMware values configuration
+- Secrets configuration
+- YAML validation
+- Management cluster deployment
+- Deployment verification
+- Rancher and Kubernetes access
+- O-DU and O-CU workload installation
 
-See [docs/architecture.md](docs/architecture.md) for the detailed architecture.
+## Architecture Overview
 
-## Target Architecture
-
-```mermaid
-flowchart TB
-    host["Physical lab server or bare-metal pool"]
-    bootstrap["Bootstrap VM or admin workstation"]
-    mgmt["Sylva management cluster"]
-    workload["Sylva workload cluster"]
-    odu["O-DU High CNF"]
-    cu["CU stub"]
-    ric["RIC stub"]
-    o1["Optional O1 NETCONF management"]
-
-    host --> bootstrap
-    bootstrap --> mgmt
-    mgmt --> workload
-    workload --> odu
-    workload --> cu
-    workload --> ric
-    odu -.-> o1
+```text
+Bootstrap VM
+    |
+    |----> Sylva deployment
+                |
+                |----> Cluster API
+                            |
+                            |----> CAPV (vSphere)
+                                        |
+                                        |----> Management cluster
+                                                    |
+                                                    |----> RKE2 Kubernetes
+                                                    |----> Rancher
+                                                    |----> Keycloak
+                                                    |----> Longhorn
+                                                    |
+                                                    |----> Workload cluster
+                                                                |
+                                                                |----> O-DU workload
+                                                                |----> O-CU workload
 ```
 
-## Requirements
+The recommended production-style model is to keep Sylva platform components on the management cluster and deploy O-DU/O-CU workloads on a separate workload cluster managed by Sylva.
 
-### Hardware
+## Prerequisites
 
-| Environment | Minimum | Recommended for this project | Notes |
-| --- | --- | --- | --- |
-| Bootstrap VM | 4 vCPU, 8 GB RAM, 40 GB disk | 4+ vCPU, 16 GB RAM, 50+ GB disk | Runs the deployment tooling and bootstrap cluster. |
-| CAPD dev or sandbox | 8 vCPU, 32 GB RAM, 100 GB disk | 16 vCPU, 64 GB RAM, 128+ GB disk | Docker-based local testing only. |
-| Bare metal production lab | 16 cores, 32 GB RAM per node | 64 vCPU, 256 GB RAM total or more | Use at least 3 management nodes for HA. |
-| O-DU High workload only | 4 CPU, 8 GB RAM | Add this on top of Sylva capacity | Lab O-DU sizing depends on selected O-DU mode and interfaces. |
+### Bootstrap VM Requirements
 
-### Network
+| Component | Recommended |
+| --- | --- |
+| OS | Ubuntu 22.04 LTS |
+| CPU | 4+ vCPUs |
+| RAM | 8 GB minimum, 16 GB recommended |
+| Disk | 40 GB minimum, 50 GB recommended |
+| Access | Passwordless sudo and SSH access |
 
-- Internet access from the bootstrap VM for container images, Helm charts, and Git repositories.
-- Reachability from the bootstrap VM to the target provider APIs or bare-metal BMC interfaces.
-- DNS or `/etc/hosts` entries for Sylva services such as `rancher.sylva`, `harbor.sylva`, `keycloak.sylva`, and `vault.sylva`.
-- A free `cluster_virtual_ip` for the management cluster API or ingress, depending on the selected provider.
-- Separate management, workload, and BMC networks for bare-metal deployments.
+If using OpenStack instead of VMware, ensure the bootstrap VM is on the same tenant and network as the management cluster VMs.
 
-### Software
+### VMware Environment Requirements
 
-Install these on the bootstrap VM or admin workstation:
+Minimum management cluster:
 
-- Ubuntu 22.04 LTS or another supported Linux distribution.
-- Docker Engine, latest stable release. Docker 20.10+ is the baseline for CAPD labs.
-- `git`
-- `curl`
-- `kubectl`
-- `yq` v4+
-- `jq`
-- `python3`
-- `pip`
-- Python packages: `PyYAML`, `yamllint`
+- 3 control plane VMs
+- 4 vCPUs per VM
+- 8 GB RAM per VM
+- 50 GB disk per VM
 
-Optional but useful:
+Required VMware access:
 
-- `helm`
-- `kind`
-- `flux`
-- `make`
+- vCenter Server access
+- Datacenter permissions
+- Datastore permissions
+- Network creation or network access permissions
+- VM template or image access
+- Enough CPU, memory, and storage quota for the management cluster
 
-Verify the local toolchain:
+### O-DU and O-CU Workload Requirements
 
-```bash
-docker version
-git --version
-kubectl version --client
-yq --version
-python3 --version
-pip --version
-yamllint --version
-```
+Minimum lab sizing:
 
-## Provider Options
+- O-DU High: 4 CPUs and 8 GB RAM
+- O-CU or CU stub: 2 to 4 CPUs and 4 to 8 GB RAM
+- Additional disk space for container images and logs
 
-| Provider | Use case | Infrastructure |
-| --- | --- | --- |
-| CAPD | Development and sandbox testing | Kubernetes clusters run as Docker containers on one Linux host. |
-| CAPM3 | Production edge or telco bare metal | Kubernetes clusters are deployed directly to bare-metal nodes through Metal3, PXE, and BMC control. |
-| CAPO | Private cloud | Kubernetes clusters are deployed on OpenStack. |
-| CAPV | VMware private cloud | Kubernetes clusters are deployed on vSphere. |
-| CAPONE | OpenNebula private cloud | Kubernetes clusters are deployed on OpenNebula. |
+Recommended networking for first lab:
 
-For the first lab build, use CAPD if the goal is a fast local demonstration. Use CAPM3 if the goal is a realistic telco edge or bare-metal project.
+- Start with Kubernetes service networking or host networking.
+- Move to Multus, SR-IOV, hugepages, DPDK, PTP, and real-time kernel tuning for a more realistic RAN lab.
 
-## Build Steps
-
-### 1. Prepare the Bootstrap Host
-
-Install the required tools and Python packages:
+## Step 1: Update Ubuntu
 
 ```bash
 sudo apt update
-sudo apt install -y git curl jq python3 python3-pip python3-venv
-python3 -m pip install --user PyYAML yamllint
+sudo apt upgrade -y
 ```
 
-Install Docker, `kubectl`, and `yq` using your organization-approved method or the official upstream packages. After installation, confirm that the user can run Docker without `sudo`.
+## Step 2: Install Required Packages
 
 ```bash
+sudo apt install -y \
+    curl \
+    wget \
+    git \
+    vim \
+    jq \
+    unzip \
+    tar \
+    make \
+    python3 \
+    python3-pip \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    yamllint
+```
+
+## Step 3: Install Docker
+
+Remove old Docker packages:
+
+```bash
+sudo apt remove docker docker-engine docker.io containerd runc -y
+```
+
+Add the Docker repository:
+
+```bash
+sudo mkdir -p /etc/apt/keyrings
+
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+echo \
+"deb [arch=$(dpkg --print-architecture) \
+signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/ubuntu \
+$(lsb_release -cs) stable" | \
+sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+```
+
+Install Docker:
+
+```bash
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+```
+
+Enable Docker:
+
+```bash
+sudo systemctl enable docker
+sudo systemctl start docker
+```
+
+Add your user to the Docker group:
+
+```bash
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+Verify:
+
+```bash
+docker version
 docker ps
 ```
 
-### 2. Clone Sylva Core
+## Step 4: Install kubectl
+
+```bash
+curl -LO "https://dl.k8s.io/release/$(curl -L -s \
+https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+
+chmod +x kubectl
+sudo mv kubectl /usr/local/bin/
+```
+
+Verify:
+
+```bash
+kubectl version --client
+```
+
+## Step 5: Install Helm
+
+```bash
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+```
+
+Verify:
+
+```bash
+helm version
+```
+
+## Step 6: Install clusterctl
+
+```bash
+curl -L https://github.com/kubernetes-sigs/cluster-api/releases/latest/download/clusterctl-linux-amd64 \
+-o clusterctl
+
+chmod +x clusterctl
+sudo mv clusterctl /usr/local/bin/
+```
+
+Verify:
+
+```bash
+clusterctl version
+```
+
+## Step 7: Install yq
+
+```bash
+sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
+-O /usr/local/bin/yq
+
+sudo chmod +x /usr/local/bin/yq
+```
+
+Verify:
+
+```bash
+yq --version
+```
+
+## Step 8: Install Python YAML Tools
+
+```bash
+python3 -m pip install --user PyYAML yamllint
+yamllint --version
+```
+
+## Step 9: Clone Sylva Repository
 
 ```bash
 git clone https://gitlab.com/sylva-projects/sylva-core.git
 cd sylva-core
 ```
 
-For repeatable results, pin the project to the release you tested:
+For repeatable deployments, pin a tested Sylva release:
 
 ```bash
 git tag --list
 git checkout <tested-sylva-release>
 ```
 
-### 3. Select the Provider
-
-Choose the provider folder that matches the target environment. The exact sample folder name can change by Sylva release, so inspect `environment-values/` after cloning.
-
-Examples:
+## Step 10: Create VMware Environment Folder
 
 ```bash
-ls environment-values
-ls environment-values/workload-clusters
+cp -r environment-values/rke2-capv/ environment-values/my-rke2-capv
+cd environment-values/my-rke2-capv
 ```
 
-For a CAPD lab, copy the available CAPD sample into a project-specific folder:
+If your selected Sylva release uses a different CAPV sample path, inspect the available environment values:
 
 ```bash
-cp -r environment-values/kubeadm-capd environment-values/my-sylva-mgmt
+ls ../../environment-values
 ```
 
-If your Sylva release uses a different CAPD sample path, use the matching folder from `environment-values/`.
-
-For bare metal, OpenStack, or VMware, choose one matching sample:
-
-```bash
-cp -r environment-values/rke2-capm3 environment-values/my-sylva-mgmt
-cp -r environment-values/rke2-capo environment-values/my-sylva-mgmt
-cp -r environment-values/rke2-capv environment-values/my-sylva-mgmt
-```
-
-Use only one provider folder for the actual build.
-
-### 4. Configure Management Cluster Values
+## Step 11: Configure values.yaml
 
 Edit:
 
 ```bash
-environment-values/my-sylva-mgmt/values.yaml
-environment-values/my-sylva-mgmt/secrets.yaml
+vim values.yaml
 ```
 
-Set at least:
+Example configuration:
 
-- Cluster name.
-- Provider type.
-- Kubernetes version.
-- Control plane and worker node counts.
-- `cluster_virtual_ip`.
-- DNS and ingress settings.
-- Proxy settings, if needed.
-- Registry mirror settings, if needed.
-- Provider credentials in `secrets.yaml`.
-- Required Sylva units, such as Rancher, Harbor, Vault, Keycloak, monitoring, and Flux.
+```yaml
+name: sylva-management
 
-Validate YAML before deployment:
+k8s_version: v1.30.1+rke2r1
 
-```bash
-yamllint environment-values/my-sylva-mgmt/values.yaml
-yamllint environment-values/my-sylva-mgmt/secrets.yaml
+control_plane_replicas: 3
+
+capi_providers:
+  infra_provider: capv
+  bootstrap_provider: cabpr
+
+capv:
+  server: "vcenter.example.local"
+  username: "administrator@vsphere.local"
+  password: "VMwarePassword"
+  dataCenter: "Datacenter"
+  dataStore: "Datastore01"
+  image_name: "ubuntu-2204-kube-v1.30"
+  ssh_key: "ssh-rsa AAAAB3Nza..."
+  networks:
+    default:
+      networkName: "VM Network"
+
+enable_longhorn: true
+
+ntp:
+  servers:
+    - "0.pool.ntp.org"
+    - "1.pool.ntp.org"
+
+units:
+  rancher:
+    enabled: true
+  keycloak:
+    enabled: true
+  longhorn:
+    enabled: true
+  harbor:
+    enabled: true
+  vault:
+    enabled: true
 ```
 
-### 5. Deploy the Sylva Management Cluster
+Replace all example values with your real vSphere settings.
 
-Current Sylva documentation uses `bootstrap.sh` for the management cluster. Some older notes and branches may refer to `apply.sh`. Use the script that exists in the selected Sylva release.
+## Step 12: Configure secrets.yaml
+
+Edit:
 
 ```bash
-ls bootstrap.sh apply.sh
-./bootstrap.sh environment-values/my-sylva-mgmt
+vim secrets.yaml
 ```
 
-If your selected release uses `apply.sh` instead:
+Example:
 
-```bash
-./apply.sh environment-values/my-sylva-mgmt
+```yaml
+cluster:
+  capv:
+    vcenter:
+      server: "vcenter.example.local"
+      username: "administrator@vsphere.local"
+      password: "YourSecurePassword"
+      insecure: true
 ```
 
-Watch cluster progress:
+Do not commit real credentials to Git.
+
+## Step 13: Optional Proxy Configuration
+
+If the deployment uses proxy servers, add proxy settings to the environment values:
+
+```yaml
+proxies:
+  http_proxy: "http://proxy.example.com:8080"
+  https_proxy: "http://proxy.example.com:8080"
+  no_proxy: "127.0.0.1,localhost"
+
+sylva_base_oci_registry: oci://my-private-registry/proxy_cache_registry.gitlab.com/sylva-projects
+oci_registry_insecure: true
+```
+
+Add vCenter, Kubernetes API addresses, service CIDRs, pod CIDRs, and internal domains to `no_proxy` when required.
+
+## Step 14: Validate YAML Files
 
 ```bash
-kubectl get events -A -w
-kubectl get nodes -w
+yamllint values.yaml
+yamllint secrets.yaml
+```
+
+## Step 15: Bootstrap Sylva
+
+Return to the Sylva repository root:
+
+```bash
+cd ../../
+```
+
+Run the deployment:
+
+```bash
+make all ENV=environment-values/my-rke2-capv
+```
+
+This step installs and configures:
+
+- Cluster API
+- CAPV
+- RKE2
+- Rancher
+- Keycloak
+- Longhorn
+- Supporting Sylva infrastructure
+
+## Step 16: Monitor Deployment
+
+Watch pods:
+
+```bash
 kubectl get pods -A -w
 ```
 
-Expected successful result:
-
-```text
-All done
-```
-
-### 6. Validate the Management Cluster
-
-Export the management kubeconfig:
+Watch Cluster API resources:
 
 ```bash
-export KUBECONFIG=management-cluster-kubeconfig
+kubectl get clusters -A
+kubectl get machines -A
+kubectl get vspheremachines -A
+```
+
+## Step 17: Get Management Cluster Kubeconfig
+
+```bash
+kubectl get secret sylva-management-kubeconfig \
+-o jsonpath='{.data.value}' | base64 -d > management-cluster.kubeconfig
+```
+
+Set kubeconfig:
+
+```bash
+export KUBECONFIG=$(pwd)/management-cluster.kubeconfig
+```
+
+Verify:
+
+```bash
 kubectl get nodes
+```
+
+## Step 18: Verify the Management Cluster
+
+```bash
+kubectl get nodes -o wide
 kubectl get pods -A
+kubectl cluster-info
 kubectl get sylvaunits -A
 kubectl get gitrepositories -A
 ```
 
-Confirm that the core services are reachable:
+## Step 19: Access Rancher
 
-- Rancher
-- Flux or Weave GitOps UI
-- Harbor
-- Vault
-- Keycloak
-- Monitoring stack
+Get the Rancher URL:
 
-### 7. Create the Workload Cluster
+```bash
+kubectl get ingress -A
+```
 
-Create the workload cluster from the sample matching your provider. Inspect the available workload samples first:
+Example:
+
+```text
+https://rancher.example.local
+```
+
+Get the Rancher bootstrap password:
+
+```bash
+kubectl get secret bootstrap-secret \
+-n cattle-system \
+-o go-template='{{.data.bootstrapPassword|base64decode}}'
+```
+
+## Step 20: Access Keycloak
+
+Get the Keycloak ingress:
+
+```bash
+kubectl get ingress -A | grep keycloak
+```
+
+Get the admin password:
+
+```bash
+kubectl get secret keycloak \
+-n keycloak \
+-o jsonpath="{.data.admin-password}" | base64 -d
+```
+
+## Step 21: Create or Select the Workload Cluster
+
+The recommended target for O-DU and O-CU is a Sylva-managed workload cluster, not the management cluster.
+
+If the workload cluster is already created, export its kubeconfig and continue to the O-RAN workload steps.
+
+If a workload cluster still needs to be created, inspect the available workload examples:
 
 ```bash
 ls environment-values/workload-clusters
-cp -r environment-values/workload-clusters/<provider-workload-sample> environment-values/workload-clusters/odu-workload
 ```
 
-For a CAPD lab, select the available CAPD workload sample in your Sylva release.
-
-Edit the workload cluster values:
+Copy the CAPV workload sample that matches your Sylva release:
 
 ```bash
-environment-values/workload-clusters/odu-workload/values.yaml
-environment-values/workload-clusters/odu-workload/secrets.yaml
+cp -r environment-values/workload-clusters/<capv-workload-sample> environment-values/workload-clusters/oran-workload
 ```
 
-Deploy the workload cluster:
+Edit:
 
 ```bash
-./apply-workload-cluster.sh environment-values/workload-clusters/odu-workload
+vim environment-values/workload-clusters/oran-workload/values.yaml
+vim environment-values/workload-clusters/oran-workload/secrets.yaml
+```
+
+Deploy the workload cluster using the workflow supported by your Sylva release:
+
+```bash
+make workload-cluster ENV=environment-values/workload-clusters/oran-workload
+```
+
+If your selected release provides a script instead, use it:
+
+```bash
+./apply-workload-cluster.sh environment-values/workload-clusters/oran-workload
 ```
 
 Validate:
@@ -270,99 +511,391 @@ Validate:
 ```bash
 kubectl get clusters -A
 kubectl get machines -A
-kubectl get nodes
 ```
 
-### 8. Prepare the O-DU Workload
+Switch to the workload cluster kubeconfig before installing O-DU/O-CU.
 
-Start with the O-RAN SC O-DU High Docker workflow for lab validation:
+## Step 22: Prepare O-DU and O-CU Images
+
+Choose one of these image strategies:
+
+- Use prebuilt O-RAN SC images when available for your selected release.
+- Build O-DU and O-CU images from source.
+- Use CU/O-RU/RIC stubs for a first lab if a full O-CU is not ready.
+
+Create a namespace for the RAN workloads:
 
 ```bash
-docker pull nexus3.o-ran-sc.org:10004/o-ran-sc/o-du-l2:4.0.1
-docker pull nexus3.o-ran-sc.org:10004/o-ran-sc/o-du-l2-cu-stub:4.0.1
+kubectl create namespace oran
 ```
 
-For Kubernetes deployment, adapt the Docker execution into CNF manifests or a Helm chart:
-
-- Namespace: `oran-odu`
-- Workloads: O-DU High, CU stub, RIC stub
-- Networking: host networking for the first lab or Multus/SR-IOV for a more realistic RAN setup
-- Security: privileged mode only if required by the selected O-DU execution path
-- Configuration: ConfigMaps and Secrets for O-DU, CU, RIC, and optional O1 NETCONF settings
-- Images: push tested images into Harbor or another trusted registry
-
-Example image promotion flow:
+Log in to Harbor or your selected registry:
 
 ```bash
-docker tag nexus3.o-ran-sc.org:10004/o-ran-sc/o-du-l2:4.0.1 harbor.sylva/oran/o-du-l2:4.0.1
-docker tag nexus3.o-ran-sc.org:10004/o-ran-sc/o-du-l2-cu-stub:4.0.1 harbor.sylva/oran/o-du-l2-cu-stub:4.0.1
-docker push harbor.sylva/oran/o-du-l2:4.0.1
-docker push harbor.sylva/oran/o-du-l2-cu-stub:4.0.1
+docker login harbor.example.local
 ```
 
-### 9. Deploy O-DU by GitOps
+Tag and push the tested images:
 
-Create a GitOps repository or folder for the workload cluster:
+```bash
+docker tag <odu-source-image> harbor.example.local/oran/o-du:<tag>
+docker tag <ocu-source-image> harbor.example.local/oran/o-cu:<tag>
+
+docker push harbor.example.local/oran/o-du:<tag>
+docker push harbor.example.local/oran/o-cu:<tag>
+```
+
+For a first lab, you can use stubs:
+
+```bash
+docker tag <cu-stub-source-image> harbor.example.local/oran/o-cu-stub:<tag>
+docker push harbor.example.local/oran/o-cu-stub:<tag>
+```
+
+## Step 23: Create O-DU and O-CU Configuration
+
+Create ConfigMaps for the O-DU and O-CU runtime configuration:
+
+```bash
+kubectl create configmap o-du-config \
+  -n oran \
+  --from-file=odu-config.yaml=./config/odu-config.yaml
+
+kubectl create configmap o-cu-config \
+  -n oran \
+  --from-file=ocu-config.yaml=./config/ocu-config.yaml
+```
+
+Create secrets for credentials or management endpoints:
+
+```bash
+kubectl create secret generic oran-secrets \
+  -n oran \
+  --from-literal=o1-username=<username> \
+  --from-literal=o1-password=<password>
+```
+
+Recommended configuration items:
+
+- PLMN
+- TAC
+- gNB ID
+- Cell ID
+- O-DU F1 interface settings
+- O-CU F1 interface settings
+- Optional E2/RIC endpoint
+- Optional O1 NETCONF settings
+
+## Step 24: Deploy O-CU
+
+Create `o-cu-deployment.yaml`:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: o-cu
+  namespace: oran
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: o-cu
+  template:
+    metadata:
+      labels:
+        app: o-cu
+    spec:
+      containers:
+        - name: o-cu
+          image: harbor.example.local/oran/o-cu:<tag>
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 38472
+              name: f1-c
+              protocol: SCTP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/oran
+      volumes:
+        - name: config
+          configMap:
+            name: o-cu-config
+```
+
+Create `o-cu-service.yaml`:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: o-cu
+  namespace: oran
+spec:
+  selector:
+    app: o-cu
+  ports:
+    - name: f1-c
+      port: 38472
+      targetPort: 38472
+      protocol: SCTP
+```
+
+Apply:
+
+```bash
+kubectl apply -f o-cu-deployment.yaml
+kubectl apply -f o-cu-service.yaml
+```
+
+For a stub-based lab, replace the image with the CU stub image and keep the same service name so the O-DU can resolve `o-cu.oran.svc.cluster.local`.
+
+## Step 25: Deploy O-DU
+
+Create `o-du-deployment.yaml`:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: o-du
+  namespace: oran
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: o-du
+  template:
+    metadata:
+      labels:
+        app: o-du
+    spec:
+      containers:
+        - name: o-du
+          image: harbor.example.local/oran/o-du:<tag>
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: O_CU_HOST
+              value: "o-cu.oran.svc.cluster.local"
+            - name: O_CU_F1_PORT
+              value: "38472"
+          ports:
+            - containerPort: 38472
+              name: f1-c
+              protocol: SCTP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/oran
+      volumes:
+        - name: config
+          configMap:
+            name: o-du-config
+```
+
+Apply:
+
+```bash
+kubectl apply -f o-du-deployment.yaml
+```
+
+If the selected O-DU image requires host networking, hugepages, DPDK, SCTP kernel modules, or privileged access, add those settings only after validating the base pod startup.
+
+## Step 26: Optional GitOps Deployment
+
+For a Sylva-style workflow, store the O-DU and O-CU manifests in Git and reconcile them with Flux.
+
+Recommended structure:
 
 ```text
 gitops/
   clusters/
-    odu-workload/
+    oran-workload/
       kustomization.yaml
-      oran-odu/
+      oran/
         namespace.yaml
-        odu-deployment.yaml
-        cu-stub-deployment.yaml
-        ric-stub-deployment.yaml
-        services.yaml
+        o-cu-deployment.yaml
+        o-cu-service.yaml
+        o-du-deployment.yaml
+        configmaps.yaml
+        secrets.yaml
 ```
 
-Connect the repository to Flux on the workload cluster, then reconcile it through Sylva or Flux:
+Check reconciliation:
 
 ```bash
 flux get sources git -A
 flux get kustomizations -A
-flux reconcile kustomization <kustomization-name> -n <namespace> --with-source
 ```
 
-### 10. Validate the O-DU Lab
+## Step 27: Verify O-DU and O-CU
+
+Check namespace resources:
 
 ```bash
-kubectl get ns
-kubectl get pods -n oran-odu
-kubectl logs -n oran-odu deploy/o-du-high
-kubectl logs -n oran-odu deploy/cu-stub
-kubectl logs -n oran-odu deploy/ric-stub
-kubectl top pods -n oran-odu
+kubectl get all -n oran
+kubectl get pods -n oran -o wide
+```
+
+Check logs:
+
+```bash
+kubectl logs -n oran deploy/o-cu
+kubectl logs -n oran deploy/o-du
+```
+
+Check service discovery:
+
+```bash
+kubectl get svc -n oran
+kubectl describe svc o-cu -n oran
+```
+
+Check resource usage:
+
+```bash
+kubectl top pods -n oran
 ```
 
 Success criteria:
 
-- Sylva management cluster is healthy.
-- Workload cluster is visible and manageable from Sylva/Rancher.
-- O-DU High starts successfully on the workload cluster.
-- CU and RIC stubs are running before O-DU starts.
-- Logs show the expected O-DU call flow.
-- Monitoring shows CPU, memory, and pod health for the O-DU namespace.
+- Workload cluster is healthy.
+- `oran` namespace exists.
+- O-CU pod is running.
+- O-DU pod is running.
+- O-DU can resolve and reach the O-CU service.
+- Logs show successful O-DU to O-CU startup or attach flow.
+- Monitoring shows CPU, memory, and pod status.
 
-## Troubleshooting
+## Troubleshooting Commands
 
-- If Sylva deployment hangs, check Flux and controller logs:
+Check all resources:
 
 ```bash
-flux logs -n sylva-system
-kubectl get pods -A
+kubectl get all -A
+```
+
+Describe a failed pod:
+
+```bash
 kubectl describe pod <pod-name> -n <namespace>
 ```
 
-- If pods are stuck in `CrashLoopBackOff`, check available RAM and CPU first.
-- If cluster API access fails, verify `cluster_virtual_ip`, DNS, and firewall rules.
-- If CAPD fails, verify Docker is running and the host has enough memory.
-- If bare-metal provisioning fails, verify PXE, DHCP, BMC credentials, and Metal3 host status.
-- If O-DU fails in Kubernetes but works in Docker, check host networking, privileges, hugepages, DPDK, interface binding, and timing requirements.
+View logs:
+
+```bash
+kubectl logs <pod-name> -n <namespace>
+```
+
+Check Cluster API objects:
+
+```bash
+kubectl get clusters,machinesets,machinedeployments,machines -A
+```
+
+Check CAPV logs:
+
+```bash
+kubectl logs -n capv-system deployment/capv-controller-manager
+```
+
+Check all namespaces:
+
+```bash
+kubectl get ns
+```
+
+Restart a deployment:
+
+```bash
+kubectl rollout restart deployment <deployment> -n <namespace>
+```
+
+Delete a failed machine:
+
+```bash
+kubectl delete machine <machine-name>
+```
+
+## Common Issues
+
+### VMware Authentication Failure
+
+Check:
+
+- vCenter username and password
+- Datacenter permissions
+- Datastore access
+- Network access permissions
+
+### VM Creation Fails
+
+Verify:
+
+- VM template exists
+- Network exists
+- Datastore has free space
+- CPU and RAM quotas are available
+
+### Kubernetes Nodes Not Joining
+
+Check:
+
+```bash
+kubectl describe machine <machine-name>
+```
+
+Also verify:
+
+- DHCP and network access
+- DNS
+- NTP synchronization
+- Firewall rules
+
+### O-DU or O-CU Pod Fails
+
+Check:
+
+- Image name and registry credentials
+- ConfigMap and Secret names
+- SCTP support on Kubernetes nodes
+- Required ports and service names
+- CPU and memory limits
+- Host networking requirements
+- Privileged mode requirements
+- Hugepages, DPDK, SR-IOV, and PTP requirements for advanced labs
+
+## Recommended Sylva Add-ons
+
+| Unit | Purpose |
+| --- | --- |
+| Rancher | Kubernetes management |
+| Keycloak | Identity management |
+| Longhorn | Distributed storage |
+| Harbor | Container registry |
+| Vault | Secrets management |
+| FluxCD | GitOps |
+| Thanos | Monitoring |
+
+## Cleanup
+
+Delete the management cluster:
+
+```bash
+kubectl delete cluster sylva-management
+```
+
+Remove the cloned Sylva repository:
+
+```bash
+cd ..
+rm -rf sylva-core
+```
 
 ## References
 
-- Sylva documentation: https://sylva-projects.gitlab.io/docs/1.5/
 - Sylva core repository: https://gitlab.com/sylva-projects/sylva-core
-- O-RAN SC O-DU High documentation: https://docs.o-ran-sc.org/projects/o-ran-sc-o-du-l2/
+- Sylva documentation: https://sylva-projects.gitlab.io/docs/
+- Cluster API project: https://cluster-api.sigs.k8s.io/
+- Rancher: https://www.rancher.com/
+- Longhorn: https://longhorn.io/
+- O-RAN SC documentation: https://docs.o-ran-sc.org/
