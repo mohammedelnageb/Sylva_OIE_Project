@@ -2,6 +2,73 @@
 
 This repository documents a VMware CAPV deployment path for Sylva, followed by onboarding Open RAN O-DU and O-CU workloads on top of the Sylva-managed Kubernetes environment.
 
+## Project Workflow
+
+```mermaid
+flowchart LR
+    a["Prepare bootstrap VM"] --> b["Install tools"]
+    b --> c["Clone sylva-core"]
+    c --> d["Configure CAPV values and secrets"]
+    d --> e["Validate YAML"]
+    e --> f["Deploy Sylva management cluster"]
+    f --> g["Verify Rancher, Keycloak, Longhorn, and Cluster API"]
+    g --> h["Create or select workload cluster"]
+    h --> i["Prepare O-DU and O-CU images"]
+    i --> j["Deploy O-CU"]
+    j --> k["Deploy O-DU"]
+    k --> l["Validate O-RAN workload logs and health"]
+```
+
+## Architecture Design
+
+```mermaid
+flowchart TB
+    user["Admin / operator"]
+    bootstrap["Bootstrap VM<br/>Ubuntu 22.04"]
+    repo["sylva-core<br/>CAPV environment values"]
+    vcenter["VMware vCenter"]
+
+    subgraph vsphere["VMware vSphere Infrastructure"]
+        datastore["Datastore"]
+        network["vSphere network"]
+        template["Ubuntu / RKE2 VM template"]
+
+        subgraph mgmt["Sylva Management Cluster"]
+            rke2["RKE2 Kubernetes"]
+            rancher["Rancher"]
+            capi["Cluster API"]
+            capv["CAPV Controller"]
+            keycloak["Keycloak"]
+            longhorn["Longhorn"]
+            harbor["Harbor"]
+            flux["FluxCD"]
+        end
+
+        subgraph workload["Sylva Workload Cluster"]
+            oran_ns["Namespace: oran"]
+            ocu["O-CU / CU Stub"]
+            odu["O-DU High"]
+        end
+    end
+
+    user --> bootstrap
+    bootstrap --> repo
+    repo --> capi
+    capi --> capv
+    capv --> vcenter
+    vcenter --> datastore
+    vcenter --> network
+    vcenter --> template
+    capv --> mgmt
+    rancher --> workload
+    flux --> workload
+    harbor --> odu
+    harbor --> ocu
+    oran_ns --> ocu
+    oran_ns --> odu
+    odu -->|"F1 / SCTP"| ocu
+```
+
 ## Overview
 
 This guide explains how to deploy a Sylva management Kubernetes cluster on VMware vSphere using Cluster API Provider vSphere, also known as CAPV.

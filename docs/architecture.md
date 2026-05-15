@@ -1,128 +1,169 @@
-# Sylva Telco Cloud O-DU Architecture
+# Sylva VMware CAPV O-RAN Architecture
 
 ## Purpose
 
-This architecture defines a practical lab for deploying an Open RAN O-DU workload on a Sylva telco cloud platform.
+This architecture defines a practical lab for deploying Sylva on VMware vSphere with Cluster API Provider vSphere, then onboarding Open RAN O-DU and O-CU workloads.
 
 The recommended design separates platform lifecycle management from telecom workload execution:
 
-- The Sylva management cluster runs lifecycle, GitOps, registry, identity, secrets, and observability services.
-- The Sylva workload cluster runs the O-DU High CNF and its lab stubs.
+- The Sylva management cluster runs Cluster API, CAPV, Rancher, GitOps, registry, identity, storage, secrets, and observability services.
+- The Sylva workload cluster runs the O-DU and O-CU workloads.
 
-This keeps the management plane stable and gives the O-DU workload a dedicated Kubernetes target.
+This keeps the management plane stable and gives the O-RAN workloads a dedicated Kubernetes target.
+
+## Deployment Workflow
+
+```mermaid
+flowchart LR
+    a["Bootstrap VM ready"] --> b["Install Docker, kubectl, Helm, clusterctl, yq"]
+    b --> c["Clone sylva-core"]
+    c --> d["Copy rke2-capv environment"]
+    d --> e["Configure values.yaml and secrets.yaml"]
+    e --> f["Validate YAML"]
+    f --> g["Run make all ENV=environment-values/my-rke2-capv"]
+    g --> h["Management cluster created on vSphere"]
+    h --> i["Access Rancher and verify Sylva units"]
+    i --> j["Create or select workload cluster"]
+    j --> k["Deploy O-CU"]
+    k --> l["Deploy O-DU"]
+    l --> m["Validate logs, health, and F1 connectivity"]
+```
 
 ## Logical Architecture
 
 ```mermaid
 flowchart TB
-    subgraph physical["Physical server or infrastructure pool"]
-        bootstrap["Bootstrap VM or admin workstation"]
+    admin["Admin / Operator"]
+    bootstrap["Bootstrap VM<br/>Ubuntu 22.04 LTS"]
+    git["sylva-core repository<br/>environment-values/my-rke2-capv"]
+    vcenter["vCenter Server"]
 
-        subgraph management["Sylva management cluster"]
+    subgraph vmware["VMware vSphere"]
+        dc["Datacenter"]
+        ds["Datastore"]
+        net["vSphere Network"]
+        image["VM Template / Image"]
+
+        subgraph mgmt["Sylva Management Cluster"]
+            rke2["RKE2 Kubernetes"]
             rancher["Rancher"]
             capi["Cluster API"]
-            flux["Flux GitOps"]
-            harbor["Harbor registry"]
+            capv["CAPV Controller"]
+            flux["FluxCD"]
+            harbor["Harbor Registry"]
             vault["Vault"]
             keycloak["Keycloak"]
-            monitoring["Monitoring and logging"]
+            longhorn["Longhorn"]
+            monitoring["Monitoring"]
         end
 
-        subgraph workload["Sylva workload cluster"]
-            ns["Namespace: oran-odu"]
-            odu["O-DU High CNF"]
-            cu["CU stub"]
-            ric["RIC stub"]
-            o1["Optional O1 NETCONF endpoint"]
+        subgraph workload["Sylva Workload Cluster"]
+            ns["Namespace: oran"]
+            ocu["O-CU / CU Stub"]
+            odu["O-DU High"]
+            o1["Optional O1 NETCONF"]
+            e2["Optional E2 / RIC"]
         end
     end
 
-    bootstrap --> management
-    capi --> workload
+    admin --> bootstrap
+    bootstrap --> git
+    git --> capi
+    capi --> capv
+    capv --> vcenter
+    vcenter --> dc
+    vcenter --> ds
+    vcenter --> net
+    vcenter --> image
+    capv --> mgmt
+    rancher --> workload
     flux --> workload
+    harbor --> ocu
     harbor --> odu
+    ns --> ocu
     ns --> odu
-    ns --> cu
-    ns --> ric
-    odu --> cu
-    odu --> ric
+    odu -->|"F1-C / SCTP"| ocu
     odu -.-> o1
+    odu -.-> e2
     monitoring --> workload
+```
+
+## O-RAN Workload Design
+
+The first lab deployment can use an O-CU stub or lightweight O-CU container. The goal is to prove that the Sylva workload cluster can host and manage an O-RAN CNF pair.
+
+```mermaid
+sequenceDiagram
+    participant Git as GitOps Repo
+    participant Flux as FluxCD
+    participant K8s as Workload Cluster
+    participant OCU as O-CU / CU Stub
+    participant ODU as O-DU High
+    participant Mon as Monitoring
+
+    Git->>Flux: Commit O-RAN manifests
+    Flux->>K8s: Reconcile namespace, configs, services, deployments
+    K8s->>OCU: Start O-CU pod and F1 service
+    K8s->>ODU: Start O-DU pod
+    ODU->>OCU: Establish F1 connection
+    ODU->>Mon: Emit logs and metrics
+    OCU->>Mon: Emit logs and metrics
 ```
 
 ## Component Roles
 
 | Component | Role |
 | --- | --- |
-| Bootstrap VM | Runs Sylva deployment tooling and starts the bootstrap process. |
-| Sylva management cluster | Owns platform lifecycle, cluster lifecycle, GitOps, registry, identity, secrets, and observability. |
+| Bootstrap VM | Runs the Sylva deployment tooling and starts the bootstrap process. |
+| vCenter Server | Provides the VMware API endpoint used by CAPV. |
+| Datacenter | vSphere location where cluster VMs are created. |
+| Datastore | Stores the management and workload cluster VM disks. |
+| vSphere Network | Provides VM connectivity for Kubernetes nodes and Sylva services. |
+| VM Template / Image | Base image used to create RKE2 Kubernetes nodes. |
+| Sylva management cluster | Owns platform lifecycle, cluster lifecycle, GitOps, registry, identity, storage, secrets, and observability. |
 | Rancher | Provides Kubernetes cluster management and operator access. |
-| Cluster API | Provisions and manages workload cluster lifecycle through CAPD, CAPM3, CAPO, CAPV, or another provider. |
-| Flux | Reconciles declarative platform and workload configuration from Git. |
-| Harbor | Stores approved O-DU and platform container images. |
-| Vault | Stores secrets when enabled by the selected Sylva units. |
-| Keycloak | Provides identity services when enabled by the selected Sylva units. |
-| Workload cluster | Runs O-DU and future telecom CNFs. |
-| O-DU High CNF | Main Open RAN distributed unit workload for the lab. |
-| CU stub | Provides a controlled CU-side test peer for the first O-DU validation. |
-| RIC stub | Provides a controlled RIC-side test peer for the first O-DU validation. |
-| O1 NETCONF endpoint | Optional management interface for later lifecycle and configuration demos. |
+| Cluster API | Provisions and manages Kubernetes cluster lifecycle. |
+| CAPV | Talks to vSphere and creates or manages Kubernetes node VMs. |
+| FluxCD | Reconciles declarative platform and workload configuration from Git. |
+| Harbor | Stores approved O-DU, O-CU, and platform container images. |
+| Vault | Stores secrets when enabled by Sylva units. |
+| Keycloak | Provides identity services when enabled by Sylva units. |
+| Longhorn | Provides distributed storage for the lab platform. |
+| Workload cluster | Runs O-DU, O-CU, and future telecom CNFs. |
+| O-CU / CU Stub | Provides the CU-side peer for the O-DU F1 interface. |
+| O-DU High | Main Open RAN distributed unit workload for the lab. |
+| O1 NETCONF | Optional management interface for configuration and lifecycle demos. |
+| E2 / RIC | Optional near-RT RIC integration point. |
 
-## Deployment Model
-
-### Development Model
-
-Use CAPD on one Linux server when the goal is a fast proof of concept.
+## vSphere Resource Model
 
 ```mermaid
-flowchart LR
-    server["Single Linux server"]
-    docker["Docker"]
-    capd_mgmt["Management cluster in Docker"]
-    capd_workload["Workload cluster in Docker"]
-    odu["O-DU lab workload"]
+flowchart TB
+    vc["vCenter"]
+    dc["Datacenter"]
+    cluster["vSphere Cluster / Hosts"]
+    ds["Datastore"]
+    net["VM Network"]
+    tmpl["Ubuntu/RKE2 Template"]
+    cp["Management Control Plane VMs<br/>3 replicas"]
+    worker["Optional Worker VMs"]
+    wcp["Workload Cluster VMs"]
 
-    server --> docker
-    docker --> capd_mgmt
-    capd_mgmt --> capd_workload
-    capd_workload --> odu
+    vc --> dc
+    dc --> cluster
+    cluster --> ds
+    cluster --> net
+    cluster --> tmpl
+    tmpl --> cp
+    tmpl --> worker
+    tmpl --> wcp
+    ds --> cp
+    ds --> worker
+    ds --> wcp
+    net --> cp
+    net --> worker
+    net --> wcp
 ```
-
-This model is best for:
-
-- Documentation validation.
-- Platform familiarization.
-- GitOps workflow testing.
-- O-DU container startup validation.
-
-It is not suitable for production RAN performance testing.
-
-### Bare-Metal Model
-
-Use CAPM3 when the goal is a realistic telco edge design.
-
-```mermaid
-flowchart LR
-    bm["Bare-metal nodes"]
-    bmc["BMC/IPMI/Redfish"]
-    metal3["Metal3"]
-    mgmt["Sylva management cluster"]
-    workload["Workload cluster"]
-    ran["O-DU CNF with advanced networking"]
-
-    bmc --> metal3
-    metal3 --> bm
-    bm --> mgmt
-    mgmt --> workload
-    workload --> ran
-```
-
-This model is best for:
-
-- Edge cloud architecture.
-- Bare-metal lifecycle management.
-- Multus, SR-IOV, hugepages, DPDK, PTP, and real-time kernel experiments.
-- More realistic O-RAN integration.
 
 ## Build Phases
 
@@ -136,7 +177,7 @@ Deliverables:
 
 - Prepared bootstrap VM.
 - Cloned `sylva-core` repository.
-- Provider-specific `environment-values/my-sylva-mgmt` folder.
+- CAPV-specific `environment-values/my-rke2-capv` folder.
 - Working management cluster.
 - Reachable Rancher, Harbor, Flux, Vault, Keycloak, and monitoring endpoints where enabled.
 
@@ -169,7 +210,29 @@ kubectl get machines -A
 kubectl get nodes
 ```
 
-### Phase 3: O-DU CNF Onboarding
+### Phase 3: O-CU CNF Onboarding
+
+Objective:
+
+Deploy O-CU or a CU stub first so the O-DU has a stable peer.
+
+Deliverables:
+
+- O-CU or CU stub image selected and tested.
+- Images mirrored into Harbor or another trusted registry.
+- Kubernetes Service exposing the F1 endpoint.
+- ConfigMap and Secret objects prepared.
+- GitOps reconciliation path created.
+
+Validation:
+
+```bash
+kubectl get pods -n oran
+kubectl get svc -n oran
+kubectl logs -n oran deploy/o-cu
+```
+
+### Phase 4: O-DU CNF Onboarding
 
 Objective:
 
@@ -178,43 +241,42 @@ Deploy O-DU High as a Kubernetes workload on the Sylva workload cluster.
 Deliverables:
 
 - O-DU image selected and tested.
-- CU stub and RIC stub image selected and tested.
-- Images mirrored into Harbor or another trusted registry.
-- Kubernetes namespace and manifests or Helm chart prepared.
-- GitOps reconciliation path created.
+- O-DU image mirrored into Harbor or another trusted registry.
+- Kubernetes Deployment configured to reach the O-CU service.
+- Optional O1 and E2 settings prepared.
 
 Validation:
 
 ```bash
-kubectl get pods -n oran-odu
-kubectl logs -n oran-odu deploy/o-du-high
-kubectl logs -n oran-odu deploy/cu-stub
-kubectl logs -n oran-odu deploy/ric-stub
+kubectl get pods -n oran
+kubectl logs -n oran deploy/o-du
+kubectl describe svc o-cu -n oran
 ```
 
-### Phase 4: Telco Cloud Demo
+### Phase 5: Telco Cloud Demo
 
 Objective:
 
-Show that Sylva can manage the platform and O-DU workload lifecycle.
+Show that Sylva can manage the platform and O-RAN workload lifecycle.
 
 Demo flow:
 
 1. Show the Sylva management cluster.
 2. Show the workload cluster in Rancher.
-3. Show O-DU, CU stub, and RIC stub pods in the workload cluster.
+3. Show O-CU and O-DU pods in the workload cluster.
 4. Show GitOps reconciliation.
 5. Show logs and health metrics.
-6. Update an O-DU image tag and reconcile the deployment.
+6. Update an O-DU or O-CU image tag and reconcile the deployment.
 7. Show rollback or redeploy if time allows.
 
 ## Networking Design
 
-Start with a simple CAPD lab network:
+Start with a simple VMware CAPV lab network:
 
 - Kubernetes service networking for pod-to-pod traffic.
-- Host networking only if required by the O-DU container.
-- Simple service discovery between O-DU, CU stub, and RIC stub.
+- The O-CU Service exposes the F1 endpoint inside the `oran` namespace.
+- The O-DU resolves `o-cu.oran.svc.cluster.local`.
+- Host networking only if required by the selected O-DU or O-CU image.
 
 Move to a telco-grade network model later:
 
@@ -229,8 +291,8 @@ Move to a telco-grade network model later:
 Initial lab:
 
 - Keep secrets in Kubernetes Secrets or Vault if enabled.
-- Restrict privileged containers to the O-DU components that require them.
-- Use a dedicated namespace: `oran-odu`.
+- Restrict privileged containers to O-RAN components that require them.
+- Use a dedicated namespace: `oran`.
 - Pull images from Harbor after validation.
 
 Production-style improvement:
@@ -238,7 +300,7 @@ Production-style improvement:
 - Enforce image scanning and signed images.
 - Use network policies between platform and workload namespaces.
 - Use least-privilege service accounts.
-- Store O-DU configuration and credentials in Vault.
+- Store O-DU/O-CU configuration and credentials in Vault.
 - Use GitOps pull requests for all deployment changes.
 
 ## Observability Design
@@ -252,8 +314,8 @@ Minimum observability:
 
 Recommended observability:
 
-- O-DU namespace dashboard.
-- O-DU, CU stub, and RIC stub log views.
+- O-RAN namespace dashboard.
+- O-DU and O-CU log views.
 - Workload cluster capacity dashboard.
 - Alerts for `CrashLoopBackOff`, high memory, and node pressure.
 
@@ -261,28 +323,30 @@ Recommended observability:
 
 | Decision | Choice | Reason |
 | --- | --- | --- |
-| O-DU placement | Workload cluster | Avoids running telecom workloads on the management plane. |
-| First provider | CAPD | Fastest path for a local proof of concept. |
-| Production provider | CAPM3 | Best match for telco edge and bare-metal Open RAN labs. |
+| O-RAN placement | Workload cluster | Avoids running telecom workloads on the management plane. |
+| Infrastructure provider | CAPV | Matches the VMware vSphere target environment. |
 | Deployment method | GitOps | Matches Sylva operating model and makes the demo repeatable. |
-| Registry | Harbor | Keeps O-DU images under platform control. |
-| First O-DU mode | O-DU High with CU/RIC stubs | Achievable lab validation before integrating real RAN peers. |
+| Registry | Harbor | Keeps O-DU and O-CU images under platform control. |
+| First O-CU mode | O-CU stub or lightweight O-CU | Achievable lab validation before integrating real RAN peers. |
+| First O-DU mode | O-DU High | Demonstrates a telco CNF on the Sylva workload cluster. |
 
 ## Risks and Constraints
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| Sylva resource usage is high | Deployment fails or pods crash | Use 16 vCPU and 64 GB RAM for the dev lab where possible. |
-| CAPD does not represent production networking | O-DU may work in lab but fail with real interfaces | Treat CAPD as phase 1 only; move to CAPM3 for advanced networking. |
-| O-DU Docker flow assumes host networking or privileges | Kubernetes deployment needs special security and network settings | Start with controlled lab manifests, then harden after validation. |
-| Real RAN timing requirements are strict | CAPD lab cannot prove radio-grade behavior | Use bare metal, tuned kernel, PTP, CPU pinning, and SR-IOV for performance testing. |
+| Sylva resource usage is high | Deployment fails or pods crash | Use enough vSphere CPU, memory, and datastore capacity. |
+| vSphere template is not prepared correctly | CAPV cannot create usable nodes | Validate template cloud-init, networking, SSH, and image compatibility before bootstrap. |
+| CAPV permissions are incomplete | Machine creation fails | Confirm vCenter, datacenter, datastore, network, and template permissions. |
+| O-DU/O-CU images assume host networking or privileges | Kubernetes deployment needs special security and network settings | Start with controlled manifests, then add privileges or host networking only when required. |
+| Real RAN timing requirements are strict | Basic VMware lab cannot prove radio-grade behavior | Use advanced networking, CPU pinning, PTP, SR-IOV, and tuned hosts for performance tests. |
 | Sylva commands differ by release | Build docs can drift | Pin a Sylva release and record the exact command used. |
 
 ## Next Documentation Tasks
 
 - Add the selected Sylva release tag.
-- Add the selected provider and sample folder path.
+- Add the selected Sylva CAPV sample folder path.
 - Add the final IP plan and DNS names.
 - Add the exact O-DU image tags.
+- Add the exact O-CU image tags.
 - Add the GitOps repository structure after manifests are created.
 - Add screenshots from Rancher, Flux, and Kubernetes validation.
