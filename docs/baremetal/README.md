@@ -317,7 +317,220 @@ curl -k -u <bmc-user>:<bmc-password> https://<bmc-ip>/redfish/v1/
 
 Do this for every physical server.
 
-## Step 4: Configure Server Boot Order
+## Step 4: Optional One Fake BMC Lab on Proxmox
+
+Use this section if you do not have a real physical server BMC yet and want to test the Metal3/BMC concept with one fake node.
+
+This lab does not replace a real production bare-metal environment. It is only a learning and validation setup.
+
+### Fake BMC Lab Architecture
+
+```mermaid
+flowchart TB
+    proxmox["Proxmox Server"]
+
+    subgraph ubuntu["Large Ubuntu VM on Proxmox"]
+        bootstrap["Bootstrap tools"]
+        libvirt["libvirt / KVM"]
+        vbmc["VirtualBMC<br/>IPMI emulator"]
+        metal3["Metal3 / CAPM3"]
+        fakebm["fake-bm-01 VM"]
+    end
+
+    proxmox --> ubuntu
+    bootstrap --> metal3
+    metal3 -->|"IPMI: ipmi://ubuntu-vm-ip:6230"| vbmc
+    vbmc -->|"Power on/off"| libvirt
+    libvirt --> fakebm
+    metal3 -->|"PXE / provisioning network"| fakebm
+```
+
+### 4.1 Enable Nested Virtualization
+
+In Proxmox, edit the Ubuntu VM:
+
+```text
+CPU type: host
+Nested virtualization: enabled
+```
+
+Inside the Ubuntu VM, check that nested virtualization is visible:
+
+```bash
+egrep -c '(vmx|svm)' /proc/cpuinfo
+```
+
+The output should be greater than `0`.
+
+### 4.2 Install libvirt and VirtualBMC Tools
+
+Run inside the large Ubuntu VM:
+
+```bash
+sudo apt update
+sudo apt install -y \
+    qemu-kvm \
+    libvirt-daemon-system \
+    libvirt-clients \
+    virtinst \
+    bridge-utils \
+    cpu-checker \
+    python3-pip \
+    ipmitool
+```
+
+Enable libvirt:
+
+```bash
+sudo systemctl enable libvirtd
+sudo systemctl start libvirtd
+sudo usermod -aG libvirt,kvm $USER
+newgrp libvirt
+```
+
+Verify:
+
+```bash
+virsh list --all
+```
+
+Install VirtualBMC:
+
+```bash
+python3 -m pip install --user virtualbmc
+echo 'export PATH=$PATH:$HOME/.local/bin' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Verify:
+
+```bash
+vbmc --help
+vbmcd --help
+```
+
+### 4.3 Start the VirtualBMC Daemon
+
+For the first test, run it in a terminal:
+
+```bash
+vbmcd
+```
+
+Keep this terminal open while testing. Later, you can create a systemd service for `vbmcd`.
+
+### 4.4 Create One Fake Bare-Metal VM
+
+Create one fake node controlled by libvirt:
+
+```bash
+sudo virt-install \
+  --name fake-bm-01 \
+  --memory 8192 \
+  --vcpus 4 \
+  --disk size=50,path=/var/lib/libvirt/images/fake-bm-01.qcow2 \
+  --os-variant ubuntu22.04 \
+  --network network=default,mac=52:54:00:aa:bb:01 \
+  --boot network,hd \
+  --graphics none \
+  --noautoconsole \
+  --import
+```
+
+Confirm the VM exists:
+
+```bash
+virsh list --all
+```
+
+### 4.5 Add One Virtual BMC
+
+Add a VirtualBMC endpoint for the fake node:
+
+```bash
+vbmc add fake-bm-01 --port 6230 --username admin --password password
+vbmc start fake-bm-01
+vbmc list
+```
+
+Test IPMI control locally:
+
+```bash
+ipmitool -I lanplus -H 127.0.0.1 -p 6230 -U admin -P password power status
+ipmitool -I lanplus -H 127.0.0.1 -p 6230 -U admin -P password power on
+ipmitool -I lanplus -H 127.0.0.1 -p 6230 -U admin -P password power off
+```
+
+### 4.6 Use the Fake BMC in Metal3 or Sylva
+
+When Metal3 runs in the same Ubuntu VM, you can usually use:
+
+```text
+ipmi://127.0.0.1:6230
+```
+
+When Metal3 runs inside a Kubernetes cluster or container network, use the Ubuntu VM IP instead:
+
+```text
+ipmi://<ubuntu-vm-ip>:6230
+```
+
+Example BareMetalHost BMC settings:
+
+```yaml
+bmc:
+  address: "ipmi://<ubuntu-vm-ip>:6230"
+  username: "admin"
+  password: "password"
+```
+
+Example secret:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fake-bm-01-bmc-secret
+type: Opaque
+stringData:
+  username: admin
+  password: password
+```
+
+Example BareMetalHost fragment:
+
+```yaml
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: fake-bm-01
+spec:
+  online: true
+  bootMACAddress: "52:54:00:aa:bb:01"
+  bmc:
+    address: "ipmi://<ubuntu-vm-ip>:6230"
+    credentialsName: fake-bm-01-bmc-secret
+```
+
+### 4.7 Important Limitations
+
+One fake BMC is useful for learning:
+
+- IPMI power control
+- Metal3 BareMetalHost registration
+- provisioning workflow concepts
+
+One fake BMC is not enough for a full HA Sylva management cluster. A normal Sylva management cluster expects multiple nodes, commonly 3 control-plane nodes.
+
+For a full fake bare-metal Sylva lab, repeat the same pattern for more fake nodes:
+
+```text
+fake-bm-01 -> port 6230
+fake-bm-02 -> port 6231
+fake-bm-03 -> port 6232
+```
+
+## Step 5: Configure Server Boot Order
 
 In each server BIOS or BMC console:
 
@@ -327,9 +540,9 @@ In each server BIOS or BMC console:
 4. Disable Secure Boot unless your image and boot chain support it.
 5. Confirm the boot MAC address for each server.
 
-The boot MAC address is required by Metal3 so it can match each physical host to the correct provisioning interface.
+The boot MAC address is required by Metal3 so it can match each physical or fake bare-metal host to the correct provisioning interface.
 
-## Step 5: Clone Sylva Repository
+## Step 6: Clone Sylva Repository
 
 ```bash
 git clone https://gitlab.com/sylva-projects/sylva-core.git
@@ -343,7 +556,7 @@ git tag --list
 git checkout <tested-sylva-release>
 ```
 
-## Step 6: Create the CAPM3 Environment Folder
+## Step 7: Create the CAPM3 Environment Folder
 
 Copy the bare-metal CAPM3 sample:
 
@@ -358,7 +571,7 @@ If the exact folder name is different in your Sylva release, inspect:
 ls ../../environment-values
 ```
 
-## Step 7: Configure values.yaml
+## Step 8: Configure values.yaml
 
 Edit:
 
@@ -412,7 +625,7 @@ Add the CAPM3 or Metal3 fields required by your selected Sylva release. These no
 - API virtual IP
 - Ingress virtual IP
 
-## Step 8: Configure secrets.yaml
+## Step 9: Configure secrets.yaml
 
 Edit:
 
@@ -445,7 +658,7 @@ baremetal_hosts:
 
 Do not commit real `secrets.yaml` values to Git.
 
-## Step 9: Validate YAML
+## Step 10: Validate YAML
 
 ```bash
 yamllint values.yaml
@@ -458,7 +671,7 @@ Return to the Sylva repository root:
 cd ../../
 ```
 
-## Step 10: Deploy Sylva Management Cluster
+## Step 11: Deploy Sylva Management Cluster
 
 Run the deployment workflow supported by your Sylva release.
 
@@ -484,7 +697,7 @@ The deployment should:
 - Install RKE2
 - Install Sylva platform units
 
-## Step 11: Monitor Bare-Metal Provisioning
+## Step 12: Monitor Bare-Metal Provisioning
 
 Watch Cluster API objects:
 
@@ -514,7 +727,7 @@ kubectl logs -n capm3-system deployment/capm3-controller-manager
 kubectl logs -n baremetal-operator-system deployment/baremetal-operator-controller-manager
 ```
 
-## Step 12: Verify Management Cluster
+## Step 13: Verify Management Cluster
 
 Get the management cluster kubeconfig using the method for your Sylva release, then verify:
 
@@ -532,7 +745,7 @@ Access Rancher:
 kubectl get ingress -A
 ```
 
-## Step 13: Create or Select the Workload Cluster
+## Step 14: Create or Select the Workload Cluster
 
 O-DU and O-CU should run on a workload cluster, not directly on the management cluster.
 
@@ -575,7 +788,7 @@ kubectl get machines -A
 kubectl get baremetalhosts -A
 ```
 
-## Step 14: Prepare O-DU and O-CU Workload Nodes
+## Step 15: Prepare O-DU and O-CU Workload Nodes
 
 For a simple lab, Kubernetes service networking may be enough.
 
@@ -603,7 +816,7 @@ kubectl label node <node-name> node-role.oran/o-du=true
 kubectl label node <node-name> node-role.oran/o-cu=true
 ```
 
-## Step 15: Deploy O-CU
+## Step 16: Deploy O-CU
 
 Create the namespace:
 
@@ -624,7 +837,7 @@ The O-CU service should expose the F1 endpoint:
 kubectl get svc -n oran
 ```
 
-## Step 16: Deploy O-DU
+## Step 17: Deploy O-DU
 
 Deploy O-DU after O-CU is running:
 
@@ -640,7 +853,7 @@ o-cu.oran.svc.cluster.local
 
 For advanced bare-metal RAN testing, add host networking, SR-IOV interfaces, hugepages, DPDK, and PTP only after the base deployment works.
 
-## Step 17: Verify O-RAN Workloads
+## Step 18: Verify O-RAN Workloads
 
 ```bash
 kubectl get all -n oran
