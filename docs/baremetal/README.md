@@ -4,6 +4,83 @@ This guide explains how to deploy Sylva on bare-metal infrastructure using Clust
 
 Use this guide when the target environment is real physical servers instead of VMware VMs.
 
+## Bootstrap Options
+
+The Bootstrap VM is the machine where you run the Sylva commands. It prepares the cluster, talks to the infrastructure provider, and starts the deployment.
+
+For your Proxmox-based environment, these are the realistic options:
+
+| Option | What It Means | Needs BMC? | Needs Nested Virtualization? | Best For |
+| --- | --- | --- | --- | --- |
+| Option A: Proxmox VM as bootstrap for real bare metal | Create an Ubuntu VM on Proxmox. It controls real physical servers through real BMC/IPMI/Redfish. | Yes, real BMC | No | Real CAPM3 bare-metal deployment |
+| Option B: Large Proxmox VM with fake BMC lab | Create one large Ubuntu VM. Inside it, run libvirt, fake bare-metal VMs, and VirtualBMC. | Yes, emulated BMC | Yes | Learning Metal3/CAPM3 without real servers |
+| Option C: Large Proxmox VM with CAPD | Create one large Ubuntu VM. Run Docker-based Sylva CAPD lab inside it. | No | No | Easiest Sylva demo on Proxmox |
+| Option D: Manual Kubernetes on Proxmox | Create VMs manually in Proxmox, install Kubernetes yourself, then deploy O-DU/O-CU. | No | No | O-RAN workload demo without full Sylva lifecycle |
+| Option E: Nested VMware inside Proxmox | Run ESXi/vCenter inside Proxmox, then use CAPV. | No BMC, but needs vCenter | Yes | Only if the project must demonstrate VMware CAPV |
+
+Recommended order:
+
+1. Use **Option C** if the goal is the fastest working Sylva lab.
+2. Use **Option B** if the goal is to learn Metal3 and fake bare-metal provisioning.
+3. Use **Option A** if the company gives you real physical servers with real BMC access.
+4. Use **Option D** if the goal is mainly O-DU/O-CU workload deployment, not Sylva cluster lifecycle.
+5. Avoid **Option E** unless VMware CAPV is required, because nested vCenter/ESXi is heavy and fragile.
+
+### Decision Diagram
+
+```mermaid
+flowchart TD
+    start["What infrastructure do you have?"]
+    realbm["Real physical servers with BMC?"]
+    proxmox["Only Proxmox VMs?"]
+    enough["Can you create one large VM with nested virtualization?"]
+    sylva["Need full Sylva platform demo?"]
+
+    start --> realbm
+    realbm -->|"Yes"| capm3["Use Option A<br/>Proxmox bootstrap VM + CAPM3 + real BMC"]
+    realbm -->|"No"| proxmox
+    proxmox --> enough
+    enough -->|"Yes"| fake["Use Option B<br/>Large VM + libvirt + VirtualBMC"]
+    enough -->|"No"| sylva
+    sylva -->|"Yes"| capd["Use Option C<br/>Large enough VM + Docker CAPD"]
+    sylva -->|"No"| manual["Use Option D<br/>Manual Kubernetes + O-DU/O-CU"]
+```
+
+### My Recommendation for This Project
+
+If your company only provides Proxmox and you do not have real BMC access yet, use this path first:
+
+```text
+Proxmox
+|
+|-- Large Ubuntu VM
+    |
+    |-- Docker
+    |-- Sylva CAPD lab
+    |-- O-DU/O-CU workload demo
+```
+
+Then use the fake BMC path as a second milestone:
+
+```text
+Proxmox
+|
+|-- Large Ubuntu VM
+    |
+    |-- libvirt/KVM
+    |-- VirtualBMC
+    |-- fake-bm-01
+    |-- Metal3/CAPM3 learning lab
+```
+
+Use the real CAPM3 path only when you have:
+
+- Physical servers
+- BMC/IPMI/Redfish access
+- PXE/provisioning network
+- Management network
+- Enough nodes for the management and workload clusters
+
 ## Bare-Metal Workflow
 
 ```mermaid
