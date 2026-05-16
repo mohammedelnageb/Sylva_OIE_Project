@@ -13,18 +13,20 @@ For your Proxmox-based environment, these are the realistic options:
 | Option | What It Means | Needs BMC? | Needs Nested Virtualization? | Best For |
 | --- | --- | --- | --- | --- |
 | Option A: Proxmox VM as bootstrap for real bare metal | Create an Ubuntu VM on Proxmox. It controls real physical servers through real BMC/IPMI/Redfish. | Yes, real BMC | No | Real CAPM3 bare-metal deployment |
-| Option B: Large Proxmox VM with fake BMC lab | Create one large Ubuntu VM. Inside it, run libvirt, fake bare-metal VMs, and VirtualBMC. | Yes, emulated BMC | Yes | Learning Metal3/CAPM3 without real servers |
-| Option C: Large Proxmox VM with CAPD | Create one large Ubuntu VM. Run Docker-based Sylva CAPD lab inside it. | No | No | Easiest Sylva demo on Proxmox |
-| Option D: Manual Kubernetes on Proxmox | Create VMs manually in Proxmox, install Kubernetes yourself, then deploy O-DU/O-CU. | No | No | O-RAN workload demo without full Sylva lifecycle |
-| Option E: Nested VMware inside Proxmox | Run ESXi/vCenter inside Proxmox, then use CAPV. | No BMC, but needs vCenter | Yes | Only if the project must demonstrate VMware CAPV |
+| Option B: Bootstrap VM controls a separate Proxmox target VM | Create an Ubuntu bootstrap VM and a separate large target VM. Run a Proxmox-aware BMC emulator on the bootstrap VM. | Yes, emulated BMC | No | Fake bare-metal lab without nesting VMs inside the bootstrap VM |
+| Option C: Large Proxmox VM with nested fake BMC lab | Create one large Ubuntu VM. Inside it, run libvirt, fake bare-metal VMs, and VirtualBMC. | Yes, emulated BMC | Yes | Learning Metal3/CAPM3 when a Proxmox-aware emulator is not available |
+| Option D: Large Proxmox VM with CAPD | Create one large Ubuntu VM. Run Docker-based Sylva CAPD lab inside it. | No | No | Easiest Sylva demo on Proxmox |
+| Option E: Manual Kubernetes on Proxmox | Create VMs manually in Proxmox, install Kubernetes yourself, then deploy O-DU/O-CU. | No | No | O-RAN workload demo without full Sylva lifecycle |
+| Option F: Nested VMware inside Proxmox | Run ESXi/vCenter inside Proxmox, then use CAPV. | No BMC, but needs vCenter | Yes | Only if the project must demonstrate VMware CAPV |
 
 Recommended order:
 
-1. Use **Option C** if the goal is the fastest working Sylva lab.
-2. Use **Option B** if the goal is to learn Metal3 and fake bare-metal provisioning.
+1. Use **Option D** if the goal is the fastest working Sylva lab.
+2. Use **Option B** if you want the bootstrap VM to emulate BMC control for a separate Proxmox target VM.
 3. Use **Option A** if the company gives you real physical servers with real BMC access.
-4. Use **Option D** if the goal is mainly O-DU/O-CU workload deployment, not Sylva cluster lifecycle.
-5. Avoid **Option E** unless VMware CAPV is required, because nested vCenter/ESXi is heavy and fragile.
+4. Use **Option C** if you cannot get a Proxmox-aware emulator and can enable nested virtualization.
+5. Use **Option E** if the goal is mainly O-DU/O-CU workload deployment, not Sylva cluster lifecycle.
+6. Avoid **Option F** unless VMware CAPV is required, because nested vCenter/ESXi is heavy and fragile.
 
 ### Decision Diagram
 
@@ -33,17 +35,20 @@ flowchart TD
     start["What infrastructure do you have?"]
     realbm["Real physical servers with BMC?"]
     proxmox["Only Proxmox VMs?"]
-    enough["Can you create one large VM with nested virtualization?"]
+    api["Can your BMC emulator control Proxmox API?"]
+    enough["Can you enable nested virtualization?"]
     sylva["Need full Sylva platform demo?"]
 
     start --> realbm
     realbm -->|"Yes"| capm3["Use Option A<br/>Proxmox bootstrap VM + CAPM3 + real BMC"]
     realbm -->|"No"| proxmox
-    proxmox --> enough
-    enough -->|"Yes"| fake["Use Option B<br/>Large VM + libvirt + VirtualBMC"]
+    proxmox --> api
+    api -->|"Yes"| proxemu["Use Option B<br/>Bootstrap VM + Proxmox-aware BMC emulator + target VM"]
+    api -->|"No"| enough
+    enough -->|"Yes"| fake["Use Option C<br/>Nested libvirt + VirtualBMC"]
     enough -->|"No"| sylva
-    sylva -->|"Yes"| capd["Use Option C<br/>Large enough VM + Docker CAPD"]
-    sylva -->|"No"| manual["Use Option D<br/>Manual Kubernetes + O-DU/O-CU"]
+    sylva -->|"Yes"| capd["Use Option D<br/>Large enough VM + Docker CAPD"]
+    sylva -->|"No"| manual["Use Option E<br/>Manual Kubernetes + O-DU/O-CU"]
 ```
 
 ### My Recommendation for This Project
@@ -60,17 +65,19 @@ Proxmox
     |-- O-DU/O-CU workload demo
 ```
 
-Then use the fake BMC path as a second milestone:
+Then use the Proxmox-aware fake BMC path as a second milestone:
 
 ```text
 Proxmox
 |
-|-- Large Ubuntu VM
-    |
-    |-- libvirt/KVM
-    |-- VirtualBMC
-    |-- fake-bm-01
-    |-- Metal3/CAPM3 learning lab
+|-- Bootstrap VM
+|     |
+|     |-- Proxmox-aware BMC emulator
+|     |-- Metal3/CAPM3 learning lab
+|
+|-- Large Target VM
+      |
+      |-- treated as fake bare metal
 ```
 
 Use the real CAPM3 path only when you have:
@@ -394,171 +401,266 @@ curl -k -u <bmc-user>:<bmc-password> https://<bmc-ip>/redfish/v1/
 
 Do this for every physical server.
 
-## Step 4: Optional One Fake BMC Lab on Proxmox
+## Step 4: Optional Proxmox-Aware Fake BMC Lab
 
-Use this section if you do not have a real physical server BMC yet and want to test the Metal3/BMC concept with one fake node.
+Use this section if you want the Bootstrap VM to act as the BMC emulator and control a separate large target VM on Proxmox.
 
-This lab does not replace a real production bare-metal environment. It is only a learning and validation setup.
+This is the design:
 
-### Fake BMC Lab Architecture
+```text
+Proxmox
+|
+|-- Bootstrap VM
+|     Ubuntu 22.04
+|     Runs Sylva / Metal3 / CAPM3 tools
+|     Runs Proxmox-aware BMC emulator
+|
+|-- Target VM
+      Large VM treated as fake bare metal
+      Controlled through Proxmox API
+      PXE/network boots through provisioning network
+```
+
+This option does **not** require nested virtualization because the target VM is created directly on Proxmox, not inside the Bootstrap VM.
+
+### Proxmox-Aware Fake BMC Architecture
 
 ```mermaid
 flowchart TB
     proxmox["Proxmox Server"]
+    api["Proxmox API"]
 
-    subgraph ubuntu["Large Ubuntu VM on Proxmox"]
-        bootstrap["Bootstrap tools"]
-        libvirt["libvirt / KVM"]
-        vbmc["VirtualBMC<br/>IPMI emulator"]
-        metal3["Metal3 / CAPM3"]
-        fakebm["fake-bm-01 VM"]
+    subgraph bootstrap["Bootstrap VM"]
+        sylva["Sylva / Metal3 / CAPM3"]
+        emulator["Proxmox-aware BMC emulator<br/>IPMI or Redfish endpoint"]
     end
 
-    proxmox --> ubuntu
-    bootstrap --> metal3
-    metal3 -->|"IPMI: ipmi://ubuntu-vm-ip:6230"| vbmc
-    vbmc -->|"Power on/off"| libvirt
-    libvirt --> fakebm
-    metal3 -->|"PXE / provisioning network"| fakebm
+    subgraph target["Target VM"]
+        fakebm["fake-bm-01"]
+        pxe["PXE / network boot"]
+        disk["Provisioned disk"]
+    end
+
+    sylva -->|"BMC URL<br/>IPMI or Redfish"| emulator
+    emulator -->|"start / stop / reset / boot order"| api
+    api --> proxmox
+    proxmox --> target
+    sylva -->|"provisioning network"| pxe
+    pxe --> disk
 ```
 
-### 4.1 Enable Nested Virtualization
+### 4.1 Important Difference from VirtualBMC
 
-In Proxmox, edit the Ubuntu VM:
+`VirtualBMC` controls VMs managed by `libvirt`. It does not control Proxmox VMs directly.
+
+For this Proxmox design, the emulator must translate BMC actions into Proxmox API calls:
 
 ```text
-CPU type: host
-Nested virtualization: enabled
+Metal3 asks BMC emulator to power on
+    |
+    v
+BMC emulator calls Proxmox API
+    |
+    v
+Proxmox starts the target VM
 ```
 
-Inside the Ubuntu VM, check that nested virtualization is visible:
+The emulator must support at least:
 
-```bash
-egrep -c '(vmx|svm)' /proc/cpuinfo
-```
+- Get power state
+- Power on VM
+- Power off VM
+- Reset VM
+- Set next boot to network/PXE or virtual media
+- Return success/failure to Metal3
 
-The output should be greater than `0`.
+### 4.2 Create the Bootstrap VM
 
-### 4.2 Install libvirt and VirtualBMC Tools
+Create an Ubuntu 22.04 VM on Proxmox.
 
-Run inside the large Ubuntu VM:
+Recommended sizing:
+
+| Component | Value |
+| --- | --- |
+| CPU | 4+ vCPU |
+| RAM | 8 to 16 GB |
+| Disk | 50+ GB |
+| Network 1 | Management network |
+| Network 2 | Provisioning network, if separated |
+| Access | SSH and passwordless sudo |
+
+Install basic tools:
 
 ```bash
 sudo apt update
 sudo apt install -y \
-    qemu-kvm \
-    libvirt-daemon-system \
-    libvirt-clients \
-    virtinst \
-    bridge-utils \
-    cpu-checker \
+    curl \
+    jq \
+    git \
+    python3 \
     python3-pip \
-    ipmitool
+    ipmitool \
+    ca-certificates
 ```
 
-Enable libvirt:
+### 4.3 Create the Target VM in Proxmox
 
-```bash
-sudo systemctl enable libvirtd
-sudo systemctl start libvirtd
-sudo usermod -aG libvirt,kvm $USER
-newgrp libvirt
-```
+Create a separate Proxmox VM that Metal3 will treat as fake bare metal.
 
-Verify:
+Example target VM:
 
-```bash
-virsh list --all
-```
+| Component | Value |
+| --- | --- |
+| Name | `fake-bm-01` |
+| VM ID | `200` |
+| CPU | 4+ vCPU |
+| RAM | 8+ GB |
+| Disk | 50+ GB |
+| NIC | Connected to provisioning/management bridge |
+| Boot order | Network first, then disk |
+| OS install | No manual OS install; Metal3 should provision it |
 
-Install VirtualBMC:
-
-```bash
-python3 -m pip install --user virtualbmc
-echo 'export PATH=$PATH:$HOME/.local/bin' >> ~/.bashrc
-source ~/.bashrc
-```
-
-Verify:
-
-```bash
-vbmc --help
-vbmcd --help
-```
-
-### 4.3 Start the VirtualBMC Daemon
-
-For the first test, run it in a terminal:
-
-```bash
-vbmcd
-```
-
-Keep this terminal open while testing. Later, you can create a systemd service for `vbmcd`.
-
-### 4.4 Create One Fake Bare-Metal VM
-
-Create one fake node controlled by libvirt:
-
-```bash
-sudo virt-install \
-  --name fake-bm-01 \
-  --memory 8192 \
-  --vcpus 4 \
-  --disk size=50,path=/var/lib/libvirt/images/fake-bm-01.qcow2 \
-  --os-variant ubuntu22.04 \
-  --network network=default,mac=52:54:00:aa:bb:01 \
-  --boot network,hd \
-  --graphics none \
-  --noautoconsole \
-  --import
-```
-
-Confirm the VM exists:
-
-```bash
-virsh list --all
-```
-
-### 4.5 Add One Virtual BMC
-
-Add a VirtualBMC endpoint for the fake node:
-
-```bash
-vbmc add fake-bm-01 --port 6230 --username admin --password password
-vbmc start fake-bm-01
-vbmc list
-```
-
-Test IPMI control locally:
-
-```bash
-ipmitool -I lanplus -H 127.0.0.1 -p 6230 -U admin -P password power status
-ipmitool -I lanplus -H 127.0.0.1 -p 6230 -U admin -P password power on
-ipmitool -I lanplus -H 127.0.0.1 -p 6230 -U admin -P password power off
-```
-
-### 4.6 Use the Fake BMC in Metal3 or Sylva
-
-When Metal3 runs in the same Ubuntu VM, you can usually use:
+Record:
 
 ```text
-ipmi://127.0.0.1:6230
+Target VM ID: 200
+Target VM name: fake-bm-01
+Target boot MAC: <mac-address>
+Proxmox node name: <proxmox-node-name>
 ```
 
-When Metal3 runs inside a Kubernetes cluster or container network, use the Ubuntu VM IP instead:
-
-```text
-ipmi://<ubuntu-vm-ip>:6230
-```
-
-Example BareMetalHost BMC settings:
+The boot MAC is required later by Metal3:
 
 ```yaml
-bmc:
-  address: "ipmi://<ubuntu-vm-ip>:6230"
-  username: "admin"
-  password: "password"
+bootMACAddress: "<mac-address>"
+```
+
+### 4.4 Create a Proxmox API Token
+
+In the Proxmox UI:
+
+1. Go to **Datacenter > Permissions > API Tokens**.
+2. Create a token for a user that can manage the target VM.
+3. Give the token permissions only for the target VM where possible.
+
+The emulator needs permissions similar to:
+
+- `VM.Audit`
+- `VM.PowerMgmt`
+- `VM.Config.Options`
+
+Save:
+
+```text
+PVE_HOST=<proxmox-hostname-or-ip>
+PVE_NODE=<proxmox-node-name>
+PVE_TOKEN_ID=<user@realm!token-name>
+PVE_TOKEN_SECRET=<token-secret>
+TARGET_VMID=200
+```
+
+Do not commit the token secret to Git.
+
+### 4.5 Test Proxmox API Access from the Bootstrap VM
+
+Set variables on the Bootstrap VM:
+
+```bash
+export PVE_HOST="<proxmox-hostname-or-ip>"
+export PVE_NODE="<proxmox-node-name>"
+export PVE_TOKEN_ID="<user@realm!token-name>"
+export PVE_TOKEN_SECRET="<token-secret>"
+export TARGET_VMID="200"
+```
+
+Check target VM status:
+
+```bash
+curl -k \
+  -H "Authorization: PVEAPIToken=${PVE_TOKEN_ID}=${PVE_TOKEN_SECRET}" \
+  "https://${PVE_HOST}:8006/api2/json/nodes/${PVE_NODE}/qemu/${TARGET_VMID}/status/current" | jq
+```
+
+Power on:
+
+```bash
+curl -k -X POST \
+  -H "Authorization: PVEAPIToken=${PVE_TOKEN_ID}=${PVE_TOKEN_SECRET}" \
+  "https://${PVE_HOST}:8006/api2/json/nodes/${PVE_NODE}/qemu/${TARGET_VMID}/status/start" | jq
+```
+
+Power off:
+
+```bash
+curl -k -X POST \
+  -H "Authorization: PVEAPIToken=${PVE_TOKEN_ID}=${PVE_TOKEN_SECRET}" \
+  "https://${PVE_HOST}:8006/api2/json/nodes/${PVE_NODE}/qemu/${TARGET_VMID}/status/stop" | jq
+```
+
+If these API calls do not work, the BMC emulator will not be able to control the target VM.
+
+### 4.6 Configure Network Boot for the Target VM
+
+In Proxmox, configure the target VM so Metal3 can provision it:
+
+```text
+Boot order:
+  1. Network / PXE
+  2. Disk
+
+NIC:
+  Connected to provisioning bridge or VLAN
+
+Disk:
+  Empty disk that Metal3 can overwrite
+```
+
+If your Proxmox environment supports changing boot order through API, the emulator can set PXE as next boot. If not, keep network boot first during the lab.
+
+### 4.7 Run or Build a Proxmox-Aware BMC Emulator
+
+You need a BMC emulator that exposes either IPMI or Redfish to Metal3, then calls the Proxmox API internally.
+
+Expected emulator behavior:
+
+```text
+BMC power status -> GET Proxmox VM status
+BMC power on     -> POST Proxmox VM start
+BMC power off    -> POST Proxmox VM stop
+BMC reset        -> POST Proxmox VM reboot or reset
+BMC boot PXE     -> Set Proxmox VM boot order or require PXE-first VM config
+```
+
+Example emulator endpoint:
+
+```text
+http://<bootstrap-vm-ip>:8000/redfish/v1/Systems/fake-bm-01
+```
+
+or:
+
+```text
+ipmi://<bootstrap-vm-ip>:6230
+```
+
+Use the endpoint format supported by your emulator and Metal3 configuration.
+
+### 4.8 Use the Fake BMC in Metal3 or Sylva
+
+For a Redfish-style emulator, the BareMetalHost can look like:
+
+```yaml
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: fake-bm-01
+spec:
+  online: true
+  bootMACAddress: "<target-vm-mac-address>"
+  bmc:
+    address: "redfish-virtualmedia://<bootstrap-vm-ip>:8000/redfish/v1/Systems/fake-bm-01"
+    credentialsName: fake-bm-01-bmc-secret
+    disableCertificateVerification: true
 ```
 
 Example secret:
@@ -574,38 +676,49 @@ stringData:
   password: password
 ```
 
-Example BareMetalHost fragment:
+If your emulator exposes IPMI instead, the BMC address will look like:
 
 ```yaml
-apiVersion: metal3.io/v1alpha1
-kind: BareMetalHost
-metadata:
-  name: fake-bm-01
-spec:
-  online: true
-  bootMACAddress: "52:54:00:aa:bb:01"
-  bmc:
-    address: "ipmi://<ubuntu-vm-ip>:6230"
-    credentialsName: fake-bm-01-bmc-secret
+bmc:
+  address: "ipmi://<bootstrap-vm-ip>:6230"
+  credentialsName: fake-bm-01-bmc-secret
 ```
 
-### 4.7 Important Limitations
+### 4.9 Important Limitations
 
-One fake BMC is useful for learning:
+This option is cleaner than nested libvirt if you already use Proxmox, but it depends on the emulator.
 
-- IPMI power control
-- Metal3 BareMetalHost registration
-- provisioning workflow concepts
+Important limits:
 
-One fake BMC is not enough for a full HA Sylva management cluster. A normal Sylva management cluster expects multiple nodes, commonly 3 control-plane nodes.
+- Plain `VirtualBMC` does not control Proxmox VMs directly.
+- The emulator must understand the Proxmox API.
+- The target VM must be separate from the Bootstrap VM.
+- The target VM must be able to PXE or network boot.
+- One fake BMC is useful for learning, but not enough for a full HA Sylva management cluster.
 
-For a full fake bare-metal Sylva lab, repeat the same pattern for more fake nodes:
+For a full fake bare-metal Sylva lab, repeat the same pattern:
 
 ```text
-fake-bm-01 -> port 6230
-fake-bm-02 -> port 6231
-fake-bm-03 -> port 6232
+fake-bm-01 -> Proxmox VM 200 -> emulator endpoint 1
+fake-bm-02 -> Proxmox VM 201 -> emulator endpoint 2
+fake-bm-03 -> Proxmox VM 202 -> emulator endpoint 3
 ```
+
+### 4.10 Alternative: Nested libvirt + VirtualBMC
+
+If you cannot get or build a Proxmox-aware emulator, use the nested libvirt method instead:
+
+```text
+Proxmox
+|
+|-- Large Ubuntu VM
+    |
+    |-- libvirt/KVM
+    |-- VirtualBMC
+    |-- fake-bm-01 VM
+```
+
+That alternative requires nested virtualization, but it works with the standard `VirtualBMC` tool.
 
 ## Step 5: Configure Server Boot Order
 
