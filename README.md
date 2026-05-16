@@ -8,15 +8,16 @@ This repository documents a VMware CAPV deployment path for Sylva, followed by o
 flowchart LR
     a["Prepare bootstrap VM"] --> b["Install tools"]
     b --> c["Clone sylva-core"]
-    c --> d["Configure CAPV values and secrets"]
-    d --> e["Validate YAML"]
-    e --> f["Deploy Sylva management cluster"]
-    f --> g["Verify Rancher, Keycloak, Longhorn, and Cluster API"]
-    g --> h["Create or select workload cluster"]
-    h --> i["Prepare O-DU and O-CU images"]
-    i --> j["Deploy O-CU"]
-    j --> k["Deploy O-DU"]
-    k --> l["Validate O-RAN workload logs and health"]
+    c --> d["Create Ubuntu/RKE2 VM template in vSphere"]
+    d --> e["Configure CAPV values and secrets"]
+    e --> f["Validate YAML"]
+    f --> g["Deploy Sylva management cluster"]
+    g --> h["Verify Rancher, Keycloak, Longhorn, and Cluster API"]
+    h --> i["Create or select workload cluster"]
+    i --> j["Prepare O-DU and O-CU images"]
+    j --> k["Deploy O-CU"]
+    k --> l["Deploy O-DU"]
+    l --> m["Validate O-RAN workload logs and health"]
 ```
 
 ## Architecture Design
@@ -316,7 +317,183 @@ git tag --list
 git checkout <tested-sylva-release>
 ```
 
-## Step 10: Create VMware Environment Folder
+## Step 10: Create the Ubuntu/RKE2 VM Template in vSphere
+
+Create the VM template before configuring `values.yaml`. CAPV uses this template to clone the Sylva management cluster VMs and workload cluster VMs.
+
+The template name must match the value you later set in:
+
+```yaml
+capv:
+  image_name: "ubuntu-2204-kube-v1.30"
+```
+
+### 10.1 Create a New VM in vSphere
+
+In the vSphere Client:
+
+1. Go to **vCenter > Datacenter > Cluster or Host**.
+2. Select **Create / Register VM**.
+3. Choose **Create a new virtual machine**.
+4. Use a clear name, for example:
+
+```text
+ubuntu-2204-kube-v1.30
+```
+
+5. Select the target datacenter, cluster or ESXi host, datastore, and VM network.
+
+Recommended VM settings:
+
+| Setting | Value |
+| --- | --- |
+| Guest OS | Ubuntu Linux 64-bit |
+| OS version | Ubuntu 22.04 LTS |
+| CPU | 4 vCPU |
+| RAM | 8 GB |
+| Disk | 50 GB |
+| Network | Same network the Kubernetes nodes will use |
+| Firmware | BIOS or EFI, depending on your environment |
+| SSH | Enabled |
+
+### 10.2 Install Ubuntu 22.04
+
+Attach the Ubuntu 22.04 ISO and install the operating system.
+
+During installation:
+
+- Create a normal admin user, for example `ubuntu`.
+- Enable OpenSSH server.
+- Use DHCP for the first lab unless your network requires static IPs.
+- Make sure DNS and internet access work.
+
+After the VM boots, log in through SSH:
+
+```bash
+ssh ubuntu@<template-vm-ip>
+```
+
+### 10.3 Prepare the Template Operating System
+
+Run these commands inside the template VM:
+
+```bash
+sudo apt update
+sudo apt upgrade -y
+sudo apt install -y \
+    cloud-init \
+    open-vm-tools \
+    openssh-server \
+    curl \
+    ca-certificates \
+    sudo
+```
+
+Enable SSH and VMware tools:
+
+```bash
+sudo systemctl enable ssh
+sudo systemctl enable open-vm-tools
+sudo systemctl start ssh
+sudo systemctl start open-vm-tools
+```
+
+Allow passwordless sudo for the admin user if your Sylva/CAPV flow requires it:
+
+```bash
+echo "ubuntu ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/90-ubuntu
+sudo chmod 440 /etc/sudoers.d/90-ubuntu
+```
+
+### 10.4 Add SSH Public Key Access
+
+From the Bootstrap VM, create or reuse an SSH key:
+
+```bash
+ssh-keygen -t rsa -b 4096 -f ~/.ssh/sylva-capv -N ""
+cat ~/.ssh/sylva-capv.pub
+```
+
+Copy the public key into the template VM user's `authorized_keys`:
+
+```bash
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+echo "<paste-your-public-key-here>" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+```
+
+Test SSH from the Bootstrap VM:
+
+```bash
+ssh -i ~/.ssh/sylva-capv ubuntu@<template-vm-ip>
+```
+
+The public key content is the value you later place in `values.yaml`:
+
+```yaml
+capv:
+  ssh_key: "ssh-rsa AAAAB3Nza..."
+```
+
+### 10.5 Clean the VM Before Converting to Template
+
+Inside the template VM, clean machine-specific data:
+
+```bash
+sudo cloud-init clean --logs
+sudo rm -f /etc/machine-id
+sudo touch /etc/machine-id
+sudo rm -f /var/lib/dbus/machine-id
+sudo ln -s /etc/machine-id /var/lib/dbus/machine-id
+history -c
+```
+
+Shut down the VM:
+
+```bash
+sudo shutdown -h now
+```
+
+### 10.6 Convert the VM to a vSphere Template
+
+In the vSphere Client:
+
+1. Right-click the powered-off VM.
+2. Select **Template > Convert to Template**.
+3. Confirm the template name is exactly:
+
+```text
+ubuntu-2204-kube-v1.30
+```
+
+If your vSphere environment uses VM templates differently, keep the VM as a cloneable golden image, but make sure CAPV can find it by the `image_name` value.
+
+### 10.7 Verify the Template
+
+Before running Sylva, confirm:
+
+- The template exists in the same vCenter and datacenter used by Sylva.
+- The template is visible to the vCenter user in `secrets.yaml`.
+- The template can connect to the selected VM network.
+- The datastore has enough free space.
+- The Bootstrap VM can reach vCenter.
+- DNS and NTP are working.
+
+The relationship is:
+
+```text
+ubuntu-2204-kube-v1.30 template
+        |
+        | cloned by CAPV
+        v
+Sylva management VM 1
+Sylva management VM 2
+Sylva management VM 3
+Workload cluster VMs
+```
+
+## Step 11: Create VMware Environment Folder
 
 ```bash
 cp -r environment-values/rke2-capv/ environment-values/my-rke2-capv
@@ -329,7 +506,7 @@ If your selected Sylva release uses a different CAPV sample path, inspect the av
 ls ../../environment-values
 ```
 
-## Step 11: Configure values.yaml
+## Step 12: Configure values.yaml
 
 Edit:
 
@@ -384,7 +561,7 @@ units:
 
 Replace all example values with your real vSphere settings.
 
-## Step 12: Configure secrets.yaml
+## Step 13: Configure secrets.yaml
 
 Edit:
 
@@ -406,7 +583,7 @@ cluster:
 
 Do not commit real credentials to Git.
 
-## Step 13: Optional Proxy Configuration
+## Step 14: Optional Proxy Configuration
 
 If the deployment uses proxy servers, add proxy settings to the environment values:
 
@@ -422,14 +599,14 @@ oci_registry_insecure: true
 
 Add vCenter, Kubernetes API addresses, service CIDRs, pod CIDRs, and internal domains to `no_proxy` when required.
 
-## Step 14: Validate YAML Files
+## Step 15: Validate YAML Files
 
 ```bash
 yamllint values.yaml
 yamllint secrets.yaml
 ```
 
-## Step 15: Bootstrap Sylva
+## Step 16: Bootstrap Sylva
 
 Return to the Sylva repository root:
 
@@ -453,7 +630,7 @@ This step installs and configures:
 - Longhorn
 - Supporting Sylva infrastructure
 
-## Step 16: Monitor Deployment
+## Step 17: Monitor Deployment
 
 Watch pods:
 
@@ -469,7 +646,7 @@ kubectl get machines -A
 kubectl get vspheremachines -A
 ```
 
-## Step 17: Get Management Cluster Kubeconfig
+## Step 18: Get Management Cluster Kubeconfig
 
 ```bash
 kubectl get secret sylva-management-kubeconfig \
@@ -488,7 +665,7 @@ Verify:
 kubectl get nodes
 ```
 
-## Step 18: Verify the Management Cluster
+## Step 19: Verify the Management Cluster
 
 ```bash
 kubectl get nodes -o wide
@@ -498,7 +675,7 @@ kubectl get sylvaunits -A
 kubectl get gitrepositories -A
 ```
 
-## Step 19: Access Rancher
+## Step 20: Access Rancher
 
 Get the Rancher URL:
 
@@ -520,7 +697,7 @@ kubectl get secret bootstrap-secret \
 -o go-template='{{.data.bootstrapPassword|base64decode}}'
 ```
 
-## Step 20: Access Keycloak
+## Step 21: Access Keycloak
 
 Get the Keycloak ingress:
 
@@ -536,7 +713,7 @@ kubectl get secret keycloak \
 -o jsonpath="{.data.admin-password}" | base64 -d
 ```
 
-## Step 21: Create or Select the Workload Cluster
+## Step 22: Create or Select the Workload Cluster
 
 The recommended target for O-DU and O-CU is a Sylva-managed workload cluster, not the management cluster.
 
@@ -582,7 +759,7 @@ kubectl get machines -A
 
 Switch to the workload cluster kubeconfig before installing O-DU/O-CU.
 
-## Step 22: Prepare O-DU and O-CU Images
+## Step 23: Prepare O-DU and O-CU Images
 
 Choose one of these image strategies:
 
@@ -619,7 +796,7 @@ docker tag <cu-stub-source-image> harbor.example.local/oran/o-cu-stub:<tag>
 docker push harbor.example.local/oran/o-cu-stub:<tag>
 ```
 
-## Step 23: Create O-DU and O-CU Configuration
+## Step 24: Create O-DU and O-CU Configuration
 
 Create ConfigMaps for the O-DU and O-CU runtime configuration:
 
@@ -653,7 +830,7 @@ Recommended configuration items:
 - Optional E2/RIC endpoint
 - Optional O1 NETCONF settings
 
-## Step 24: Deploy O-CU
+## Step 25: Deploy O-CU
 
 Create `o-cu-deployment.yaml`:
 
@@ -717,7 +894,7 @@ kubectl apply -f o-cu-service.yaml
 
 For a stub-based lab, replace the image with the CU stub image and keep the same service name so the O-DU can resolve `o-cu.oran.svc.cluster.local`.
 
-## Step 25: Deploy O-DU
+## Step 26: Deploy O-DU
 
 Create `o-du-deployment.yaml`:
 
@@ -767,7 +944,7 @@ kubectl apply -f o-du-deployment.yaml
 
 If the selected O-DU image requires host networking, hugepages, DPDK, SCTP kernel modules, or privileged access, add those settings only after validating the base pod startup.
 
-## Step 26: Optional GitOps Deployment
+## Step 27: Optional GitOps Deployment
 
 For a Sylva-style workflow, store the O-DU and O-CU manifests in Git and reconcile them with Flux.
 
@@ -794,7 +971,7 @@ flux get sources git -A
 flux get kustomizations -A
 ```
 
-## Step 27: Verify O-DU and O-CU
+## Step 28: Verify O-DU and O-CU
 
 Check namespace resources:
 
