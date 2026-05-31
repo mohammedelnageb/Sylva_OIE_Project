@@ -2,7 +2,7 @@
 
 This repository documents a VMware CAPV deployment path for Sylva, followed by onboarding Open RAN O-DU and O-CU workloads on top of the Sylva-managed Kubernetes environment.
 
-For bare-metal deployment with CAPM3, Proxmox bootstrap options, and fake BMC lab options, see [docs/baremetal/README.md](docs/baremetal/README.md).
+For bare-metal deployment with CAPM3, Proxmox bootstrap options, and fake BMC lab options, see [docs/baremetal/README.md](docs/baremetal/README.md). For the exact ProxmoxBMC Option B runbook, see [docs/baremetal/proxmoxbmc-option-b-runbook.md](docs/baremetal/proxmoxbmc-option-b-runbook.md).
 
 ## Project Workflow
 

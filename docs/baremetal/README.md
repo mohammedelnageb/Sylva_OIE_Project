@@ -4,6 +4,8 @@ This guide explains how to deploy Sylva on bare-metal infrastructure using Clust
 
 Use this guide when the target environment is real physical servers instead of VMware VMs.
 
+For the exact ProxmoxBMC Option B lab path from bootstrap VM to fake bare-metal target VM, see [proxmoxbmc-option-b-runbook.md](proxmoxbmc-option-b-runbook.md).
+
 ## Bootstrap Options
 
 The Bootstrap VM is the machine where you run the Sylva commands. It prepares the cluster, talks to the infrastructure provider, and starts the deployment.
