@@ -2,7 +2,7 @@
 
 This repository documents a VMware CAPV deployment path for Sylva, followed by onboarding Open RAN O-DU and O-CU workloads on top of the Sylva-managed Kubernetes environment.
 
-For bare-metal deployment with CAPM3, Proxmox bootstrap options, and fake BMC lab options, see [docs/baremetal/README.md](docs/baremetal/README.md). For the cleaned-up ProxmoxBMC lab that includes every issue we hit and the validated fixes, see [docs/baremetal/proxmoxbmc-validated-lab.md](docs/baremetal/proxmoxbmc-validated-lab.md). For the earlier Option B reference runbook, see [docs/baremetal/proxmoxbmc-option-b-runbook.md](docs/baremetal/proxmoxbmc-option-b-runbook.md).
+For bare-metal deployment with CAPM3, Proxmox bootstrap options, and fake BMC lab options, see [docs/baremetal/README.md](docs/baremetal/README.md). For the cleaned-up ProxmoxBMC lab that includes every issue we hit and the validated fixes, see [docs/baremetal/proxmoxbmc-validated-lab.md](docs/baremetal/proxmoxbmc-validated-lab.md). For the earlier Option B reference runbook, see [docs/baremetal/proxmoxbmc-option-b-runbook.md](docs/baremetal/proxmoxbmc-option-b-runbook.md). For adding Nephio as the intent-driven package automation layer above Sylva, see [docs/nephio-sylva-integration.md](docs/nephio-sylva-integration.md).
 
 ## Project Workflow
 
@@ -16,10 +16,11 @@ flowchart LR
     f --> g["Deploy Sylva management cluster"]
     g --> h["Verify Rancher, Keycloak, Longhorn, and Cluster API"]
     h --> i["Create or select workload cluster"]
-    i --> j["Prepare O-DU and O-CU images"]
-    j --> k["Deploy O-CU"]
-    k --> l["Deploy O-DU"]
-    l --> m["Validate O-RAN workload logs and health"]
+    i --> j["Optional: deploy Nephio automation layer"]
+    j --> k["Prepare O-DU and O-CU images/packages"]
+    k --> l["Deploy O-CU"]
+    l --> m["Deploy O-DU"]
+    m --> n["Validate O-RAN workload logs and health"]
 ```
 
 ## Architecture Design
@@ -52,6 +53,12 @@ flowchart TB
             ocu["O-CU / CU Stub"]
             odu["O-DU High"]
         end
+
+        subgraph nephio["Optional Nephio Automation Layer"]
+            porch["Porch"]
+            pkgvar["PackageVariant / PackageVariantSet"]
+            pkgrepo["Package repositories"]
+        end
     end
 
     user --> bootstrap
@@ -65,6 +72,10 @@ flowchart TB
     capv --> mgmt
     rancher --> workload
     flux --> workload
+    nephio --> workload
+    pkgrepo --> pkgvar
+    pkgvar --> odu
+    pkgvar --> ocu
     harbor --> odu
     harbor --> ocu
     oran_ns --> ocu
