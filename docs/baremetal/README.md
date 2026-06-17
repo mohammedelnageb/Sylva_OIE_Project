@@ -4,7 +4,7 @@ This guide explains how to deploy Sylva on bare-metal infrastructure using Clust
 
 Use this guide when the target environment is real physical servers instead of VMware VMs.
 
-For the validated ProxmoxBMC lab path, including the HTTPS iPXE workaround and every problem/fix from the real deployment, start with [proxmoxbmc-validated-lab.md](proxmoxbmc-validated-lab.md). For the earlier Option B reference runbook, see [proxmoxbmc-option-b-runbook.md](proxmoxbmc-option-b-runbook.md).
+For the validated ProxmoxBMC lab path, including the HTTPS iPXE workaround and every problem/fix from the real deployment, start with [proxmoxbmc-validated-lab.md](proxmoxbmc-validated-lab.md). For the final troubleshooting record from the real Sylva deployment, see [proxmox-sylva-deployment-issues-and-fixes.md](proxmox-sylva-deployment-issues-and-fixes.md). For the earlier Option B reference runbook, see [proxmoxbmc-option-b-runbook.md](proxmoxbmc-option-b-runbook.md).
 
 ## Bootstrap Options
 
