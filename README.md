@@ -2,7 +2,7 @@
 
 This repository documents a VMware CAPV deployment path for Sylva, followed by onboarding Open RAN O-DU and O-CU workloads on top of the Sylva-managed Kubernetes environment.
 
-For bare-metal deployment with CAPM3, Proxmox bootstrap options, and fake BMC lab options, see [docs/baremetal/README.md](docs/baremetal/README.md). For the cleaned-up ProxmoxBMC lab that includes every issue we hit and the validated fixes, see [docs/baremetal/proxmoxbmc-validated-lab.md](docs/baremetal/proxmoxbmc-validated-lab.md). For the earlier Option B reference runbook, see [docs/baremetal/proxmoxbmc-option-b-runbook.md](docs/baremetal/proxmoxbmc-option-b-runbook.md). For adding Nephio as the intent-driven package automation layer above Sylva, see [docs/nephio-sylva-integration.md](docs/nephio-sylva-integration.md).
+For bare-metal deployment with CAPM3, Proxmox bootstrap options, and fake BMC lab options, see [docs/baremetal/README.md](docs/baremetal/README.md). For the cleaned-up ProxmoxBMC lab that includes every issue we hit and the validated fixes, see [docs/baremetal/proxmoxbmc-validated-lab.md](docs/baremetal/proxmoxbmc-validated-lab.md). For the earlier Option B reference runbook, see [docs/baremetal/proxmoxbmc-option-b-runbook.md](docs/baremetal/proxmoxbmc-option-b-runbook.md). For adding Nephio as the intent-driven package automation layer above Sylva, see [docs/nephio-sylva-integration.md](docs/nephio-sylva-integration.md). For deploying OCUDU O-CU/O-DU workloads on the Sylva workload cluster, see [docs/ocudu-workload-deployment.md](docs/ocudu-workload-deployment.md).
 
 ## Project Workflow
 
@@ -17,10 +17,10 @@ flowchart LR
     g --> h["Verify Rancher, Keycloak, Longhorn, and Cluster API"]
     h --> i["Create or select workload cluster"]
     i --> j["Optional: deploy Nephio automation layer"]
-    j --> k["Prepare O-DU and O-CU images/packages"]
-    k --> l["Deploy O-CU"]
-    l --> m["Deploy O-DU"]
-    m --> n["Validate O-RAN workload logs and health"]
+    j --> k["Prepare OCUDU/Open5GS values"]
+    k --> l["Deploy Open5GS core"]
+    l --> m["Deploy OCUDU O-CU/O-DU"]
+    m --> n["Validate RAN workload logs and health"]
 ```
 
 ## Architecture Design
